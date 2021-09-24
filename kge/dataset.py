@@ -571,24 +571,4 @@ NOT RECOMMENDED: You can update the timestamp of all cached files using:
         """
         map_ = self.load_map(key, as_list=True)
         return Dataset._map_indexes(indexes, map_)
-
-    def construct_adj(self):
-        """
-        constructs a list with all neighboring entities (s,o) and a corresponding
-        list of relations r.
-        """
-        self.load_triples("train")
-        edge_index, edge_type = [], []
-
-        for sub, rel, obj in self._triples["train"]:
-            edge_index.append((sub.item(), obj.item()))
-            edge_type.append(rel.item())
-        # Adding inverse edges
-        for sub, rel, obj in self._triples["train"]:
-            edge_index.append((sub.item(), obj.item()))
-            edge_type.append(rel.item() + self._num_relations)
         
-        edge_index = torch.LongTensor(edge_index).t() # auf job device schreiben?
-        edge_type = torch.LongTensor(edge_type)
-
-        return edge_index, edge_type

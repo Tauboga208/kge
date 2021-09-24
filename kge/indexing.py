@@ -355,6 +355,71 @@ def index_frequency_percentiles(dataset, recompute=False):
             result[arg][percentile] = set(stats[int(begin * num) : int(end * num)])
     dataset._indexes["frequency_percentiles"] = result
 
+def construct_adjacency(dataset, inverse=True): #-> Tensor, Tensor:
+    """
+    constructs a 2xnum_edges-list with all edges (s,o) and a corresponding
+    list of relations r.
+    """
+
+    if not "edge_index" and "edge_type" in dataset._indexes:
+
+        dataset.load_triples("train")
+        device = dataset.config.get("job.device")
+        edge_index, edge_type = [], []
+
+        for sub, rel, obj in dataset._triples["train"]:
+            edge_index.append((sub.item(), obj.item()))
+            edge_type.append(rel.item())
+        # Adding inverse edges
+        if inverse:
+            for sub, rel, obj in dataset._triples["train"]:
+                edge_index.append((obj.item(), sub.item()))
+                edge_type.append(rel.item() + dataset._num_relations)
+            
+        edge_index = torch.LongTensor(edge_index).t().to(device) 
+        edge_type = torch.LongTensor(edge_type).to(device)
+
+        dataset._indexes["edge_index"] = edge_index
+        dataset._indexes["edge_type"] = edge_type
+
+    return dataset._indexes["edge_index"], dataset._indexes["edge_type"]
+
+def index_edge_index(dataset, inverse=True):
+    if not "edge_index" in dataset._indexes:
+
+        dataset.load_triples("train")
+        device = dataset.config.get("job.device")
+        edge_index = []
+
+        for sub, _, obj in dataset._triples["train"]:
+            edge_index.append((sub.item(), obj.item()))
+        # Adding inverse edges
+        if inverse:
+            for sub, _, obj in dataset._triples["train"]:
+                edge_index.append((obj.item(), sub.item()))
+
+        dataset._indexes["edge_index"] = torch.LongTensor(edge_index).t().to(device) 
+
+    return dataset._indexes["edge_index"]   
+
+def index_edge_type(dataset, inverse=True):
+    if not "edge_type" in dataset._indexes:
+
+        dataset.load_triples("train")
+        device = dataset.config.get("job.device")
+        edge_type = []
+
+        for _, rel, _ in dataset._triples["train"]:
+            edge_type.append(rel.item())
+        # Adding inverse edges
+        if inverse:
+            for _, rel, _ in dataset._triples["train"]:
+                edge_type.append(rel.item() + dataset._num_relations)
+
+        dataset._indexes["edge_type"] = torch.LongTensor(edge_type).t().to(device) 
+
+    return dataset._indexes["edge_type"]  
+
 
 class IndexWrapper:
     """Wraps a call to an index function so that it can be pickled"""
@@ -387,6 +452,8 @@ def create_default_index_functions(dataset: "Dataset"):
     dataset.index_functions["relation_types"] = index_relation_types
     dataset.index_functions["relations_per_type"] = index_relations_per_type
     dataset.index_functions["frequency_percentiles"] = index_frequency_percentiles
+    dataset.index_functions["edge_index"] = index_edge_index
+    dataset.index_functions["edge_type"] = index_edge_type
 
     for obj in ["entity", "relation"]:
         dataset.index_functions[f"{obj}_id_to_index"] = IndexWrapper(
