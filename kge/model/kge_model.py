@@ -230,7 +230,7 @@ class KgeEmbedder(KgeBase):
         super().__init__(config, dataset, configuration_key)
 
         #: location of the configuration options of this embedder
-        self.embedder_type: str = self.get_option("type")
+        self.encoder_type: str = self.get_option("type")
 
         # verify all custom options by trying to set them in a copy of this
         # configuration (quick and dirty, but works)
@@ -244,7 +244,7 @@ class KgeEmbedder(KgeBase):
         dummy_config = self.config.clone()
         for key, value in custom_options.items():
             try:
-                dummy_config.set(self.embedder_type + "." + key, value)
+                dummy_config.set(self.encoder_type + "." + key, value)
             except ValueError as ve:
                 raise ValueError(
                     "key {}.{} invalid or of incorrect type, message was {}".format(
@@ -350,6 +350,97 @@ class KgeEmbedder(KgeBase):
         """Returns all embeddings."""
         raise NotImplementedError
 
+class KgeRgnnEncoder(KgeBase):
+    r"""Base class for all Rgnn Encoders.
+    Runs a graph neural network over the knowledge graph to compute embeddings
+    with aggregated neighborhood information. 
+
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        dataset: Dataset,
+        configuration_key: str,
+        init_for_load_only=False,
+    ):
+        super().__init__(config, dataset, configuration_key)
+
+        #: location of the configuration options of this encoder
+        self.encoder_type: str = self.get_option("type")
+
+        # verify all custom options by trying to set them in a copy of this
+        # configuration (quick and dirty, but works)
+        try:
+            custom_options = Config.flatten(config.get(self.configuration_key))
+        except KeyError:
+            # there are no custom options
+            custom_options = {}
+        if "type" in custom_options:
+            del custom_options["type"]
+        dummy_config = self.config.clone()
+        for key, value in custom_options.items():
+            try:
+                dummy_config.set(self.encoder_type + "." + key, value)
+            except ValueError as ve:
+                raise ValueError(
+                    "key {}.{} invalid or of incorrect type, message was {}".format(
+                        self.configuration_key, key, ve
+                    )
+                )
+
+        # TODO: ist das nötig? --> gleichsetzen mit den von den embeddern
+        # self.dim: int = self.get_option("dim")
+
+    @staticmethod
+    def create(
+        config: Config,
+        dataset: Dataset,
+        configuration_key: str,
+        entity_embedder: KgeEmbedder,
+        relation_embedder: KgeEmbedder,
+        init_for_load_only=False, # TODO: wofür braucht man das?
+    ) -> "KgeRgnnEncoder":
+        """Factory method for rgnn encoder creation."""
+
+        try:
+            encoder_type = config.get_default(configuration_key + ".type")
+            class_name = config.get(encoder_type + ".class_name")
+        except:
+            raise Exception("Can't find {}.type in config".format(configuration_key))
+
+        try:
+            encoder = init_from(
+                class_name,
+                config.get("modules"),
+                config,
+                dataset,
+                configuration_key,
+                entity_embedder,
+                relation_embedder,
+                init_for_load_only=init_for_load_only,
+            )
+            return encoder
+        except:
+            config.log(
+                f"Failed to create Rgnn encoder {encoder_type} (class {class_name})."
+            )
+            raise
+
+    def prepare_job(self, job: "Job", **kwargs):
+        r"""Prepares the given job to work with this model.
+
+        If this model does not support the specified job type, this function may raise
+        an error.
+
+        This function commonly registers hooks specific to this model. For a list of
+        available hooks during training or evaluation, see :class:`TrainingJob` or
+        :class:`EvaluationJob`:, respectively.
+
+        """
+
+    def encode_spo(self, s, p, o):
+        raise NotImplementedError
 
 class KgeModel(KgeBase):
     r"""Generic KGE model for KBs with a fixed set of entities and relations.
@@ -366,6 +457,7 @@ class KgeModel(KgeBase):
         dataset: Dataset,
         scorer: Union[RelationalScorer, type],
         create_embedders=True,
+        # encoder=True, # muss anders gehen
         configuration_key=None,
         init_for_load_only=False,
     ):
@@ -394,7 +486,7 @@ class KgeModel(KgeBase):
                 config,
                 dataset,
                 self.configuration_key + ".relation_embedder",
-                num_relations,
+                num_relations * 2, # TODO: make optional for inverse! 
                 init_for_load_only=init_for_load_only,
             )
 
@@ -448,14 +540,31 @@ class KgeModel(KgeBase):
                     self._relation_embedder.init_pretrained(
                         pretrained_relations_model.get_p_embedder()
                     )
-
+        # TODO create_rgnn_encoder here
+        if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
+            self._encoder: KgeRgnnEncoder
+            self._encoder = KgeRgnnEncoder.create(
+                config,
+                dataset,
+                self.configuration_key + ".encoder",
+                self._entity_embedder,
+                self._relation_embedder,
+                init_for_load_only=init_for_load_only,
+            )
         #: Scorer
         self._scorer: RelationalScorer
         if type(scorer) == type:
             # scorer is type of the scorer to use; call its constructor
-            self._scorer = scorer(
-                config=config, dataset=dataset, configuration_key=self.configuration_key
-            )
+            if self.config.exists(self.configuration_key + ".encoder"):
+                # use the configuration key of the scoring function when using
+                # a RGNN model
+                self._scorer = scorer(
+                    config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
+                )
+            else:
+                self._scorer = scorer(
+                    config=config, dataset=dataset, configuration_key=self.configuration_key
+                )
         else:
             self._scorer = scorer
 
@@ -588,6 +697,8 @@ class KgeModel(KgeBase):
         super().prepare_job(job, **kwargs)
         self._entity_embedder.prepare_job(job, **kwargs)
         self._relation_embedder.prepare_job(job, **kwargs)
+        if self.config.exists(self.configuration_key + ".encoder"):
+            self._encoder.prepare_job(job, **kwargs)
 
         from kge.job import TrainingOrEvaluationJob
 
@@ -657,6 +768,9 @@ class KgeModel(KgeBase):
     def get_p_embedder(self) -> KgeEmbedder:
         return self._relation_embedder
 
+    def get_rgnn_encoder(self) -> KgeRgnnEncoder:
+        return self._encoder
+
     def get_scorer(self) -> RelationalScorer:
         return self._scorer
 
@@ -674,9 +788,12 @@ class KgeModel(KgeBase):
         score of triple :math:`(s_i, p_i, o_i)`.
 
         """
-        s = self.get_s_embedder().embed(s)
-        p = self.get_p_embedder().embed(p)
-        o = self.get_o_embedder().embed(o)
+        if not self.config.exists(self.configuration_key + ".encoder"):
+            s = self.get_s_embedder().embed(s)
+            p = self.get_p_embedder().embed(p)
+            o = self.get_o_embedder().embed(o)
+        else:
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
 
     def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None) -> Tensor:
@@ -692,12 +809,15 @@ class KgeModel(KgeBase):
         If `o` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        s = self.get_s_embedder().embed(s)
-        p = self.get_p_embedder().embed(p)
-        if o is None:
-            o = self.get_o_embedder().embed_all()
+        if not self.config.exists(self.configuration_key + ".encoder"):
+            s = self.get_s_embedder().embed(s)
+            p = self.get_p_embedder().embed(p)
+            if o is None:
+                o = self.get_o_embedder().embed_all()
+            else:
+                o = self.get_o_embedder().embed(o)
         else:
-            o = self.get_o_embedder().embed(o)
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
 
         return self._scorer.score_emb(s, p, o, combine="sp_")
 
@@ -714,13 +834,15 @@ class KgeModel(KgeBase):
         If `s` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-
-        if s is None:
-            s = self.get_s_embedder().embed_all()
+        if not self.config.exists(self.configuration_key + ".encoder"):
+            if s is None:
+                s = self.get_s_embedder().embed_all()
+            else:
+                s = self.get_s_embedder().embed(s)
+            o = self.get_o_embedder().embed(o)
+            p = self.get_p_embedder().embed(p)
         else:
-            s = self.get_s_embedder().embed(s)
-        o = self.get_o_embedder().embed(o)
-        p = self.get_p_embedder().embed(p)
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
 
         return self._scorer.score_emb(s, p, o, combine="_po")
 
@@ -737,12 +859,15 @@ class KgeModel(KgeBase):
         If `p` is not None, it is a vector holding the indexes of the relations to score.
 
         """
-        s = self.get_s_embedder().embed(s)
-        o = self.get_o_embedder().embed(o)
-        if p is None:
-            p = self.get_p_embedder().embed_all()
+        if not self.config.exists(self.configuration_key + ".encoder"):
+            s = self.get_s_embedder().embed(s)
+            o = self.get_o_embedder().embed(o)
+            if p is None:
+                p = self.get_p_embedder().embed_all()
+            else:
+                p = self.get_p_embedder().embed(p)
         else:
-            p = self.get_p_embedder().embed(p)
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
 
         return self._scorer.score_emb(s, p, o, combine="s_o")
 
@@ -766,24 +891,38 @@ class KgeModel(KgeBase):
         holds the score for triple :math:`(e_{j-E}, p_i, o_i)`.
 
         """
-
-        s = self.get_s_embedder().embed(s)
-        p = self.get_p_embedder().embed(p)
-        o = self.get_o_embedder().embed(o)
-        if self.get_s_embedder() is self.get_o_embedder():
-            if entity_subset is not None:
-                all_entities = self.get_s_embedder().embed(entity_subset)
+        # TODO: see what can be done here and if necessary.
+        if not self.config.exists(self.configuration_key + ".encoder"):
+            s = self.get_s_embedder().embed(s)
+            p = self.get_p_embedder().embed(p)
+            o = self.get_o_embedder().embed(o)
+            if self.get_s_embedder() is self.get_o_embedder():
+                if entity_subset is not None:
+                    all_entities = self.get_s_embedder().embed(entity_subset)
+                else:
+                    all_entities = self.get_s_embedder().embed_all()
+                sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+                po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
             else:
-                all_entities = self.get_s_embedder().embed_all()
-            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
-            po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
+                if entity_subset is not None:
+                    all_objects = self.get_o_embedder().embed(entity_subset)
+                    all_subjects = self.get_s_embedder().embed(entity_subset)
+                else:
+                    all_objects = self.get_o_embedder().embed_all()
+                    all_subjects = self.get_s_embedder().embed_all()
+                sp_scores = self._scorer.score_emb(s, p, all_objects, combine="sp_")
+                po_scores = self._scorer.score_emb(all_subjects, p, o, combine="_po")
+            
         else:
             if entity_subset is not None:
-                all_objects = self.get_o_embedder().embed(entity_subset)
-                all_subjects = self.get_s_embedder().embed(entity_subset)
+                s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
+                    s, p, o, entity_subset
+                )
             else:
-                all_objects = self.get_o_embedder().embed_all()
-                all_subjects = self.get_s_embedder().embed_all()
-            sp_scores = self._scorer.score_emb(s, p, all_objects, combine="sp_")
-            po_scores = self._scorer.score_emb(all_subjects, p, o, combine="_po")
+                s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
+                    s, p, o, "all"
+                )
+            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+            po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
+        
         return torch.cat((sp_scores, po_scores), dim=1)
