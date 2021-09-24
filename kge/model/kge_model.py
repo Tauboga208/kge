@@ -541,30 +541,32 @@ class KgeModel(KgeBase):
                         pretrained_relations_model.get_p_embedder()
                     )
         # TODO create_rgnn_encoder here
-        if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
-            self._encoder: KgeRgnnEncoder
-            self._encoder = KgeRgnnEncoder.create(
-                config,
-                dataset,
-                self.configuration_key + ".encoder",
-                self._entity_embedder,
-                self._relation_embedder,
-                init_for_load_only=init_for_load_only,
-            )
+        # if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
+        #     self._encoder: KgeRgnnEncoder
+        #     self._encoder = KgeRgnnEncoder.create(
+        #         config,
+        #         dataset,
+        #         self.configuration_key + ".encoder",
+        #         self._entity_embedder,
+        #         self._relation_embedder,
+        #         init_for_load_only=init_for_load_only,
+        #     )
         #: Scorer
         self._scorer: RelationalScorer
         if type(scorer) == type:
-            # scorer is type of the scorer to use; call its constructor
-            if self.config.exists(self.configuration_key + ".encoder"):
+            # scorer is type of the scorer to use; call its constructor 
+            # TODO:
+            # rausnehmen falls es klappt
+            #if self.config.exists(self.configuration_key + ".encoder"):
                 # use the configuration key of the scoring function when using
                 # a RGNN model
-                self._scorer = scorer(
-                    config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
-                )
-            else:
-                self._scorer = scorer(
-                    config=config, dataset=dataset, configuration_key=self.configuration_key
-                )
+                # self._scorer = scorer(
+                #     config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
+                # )
+            #else:
+            self._scorer = scorer(
+                config=config, dataset=dataset, configuration_key=self.configuration_key
+            )
         else:
             self._scorer = scorer
 
@@ -768,11 +770,164 @@ class KgeModel(KgeBase):
     def get_p_embedder(self) -> KgeEmbedder:
         return self._relation_embedder
 
-    def get_rgnn_encoder(self) -> KgeRgnnEncoder:
-        return self._encoder
+    # def get_rgnn_encoder(self) -> KgeRgnnEncoder:
+    #     return self._encoder
 
     def get_scorer(self) -> RelationalScorer:
         return self._scorer
+
+    def score_spo(self, s: Tensor, p: Tensor, o: Tensor, direction=None) -> Tensor:
+        r"""Compute scores for a set of triples.
+        `s`, `p`, and `o` are vectors of common size :math:`n`, holding the indexes of
+        the subjects, relations, and objects to score.
+        `direction` may influence how scores are computed. For most models, this setting
+        has no meaning. For reciprocal relations, direction must be either `"s"` or
+        `"o"` (depending on what is predicted).
+        Returns a vector of size :math:`n`, in which the :math:`i`-th entry holds the
+        score of triple :math:`(s_i, p_i, o_i)`.
+        """
+        s = self.get_s_embedder().embed(s)
+        p = self.get_p_embedder().embed(p)
+        o = self.get_o_embedder().embed(o)
+        return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
+
+    def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None) -> Tensor:
+        r"""Compute scores for triples formed from a set of sp-pairs and all (or a subset of the) objects.
+        `s` and `p` are vectors of common size :math:`n`, holding the indexes of the
+        subjects and relations to score.
+        Returns an :math:`n\times E` tensor, where :math:`E` is the total number of
+        known entities. The :math:`(i,j)`-entry holds the score for triple :math:`(s_i,
+        p_i, j)`.
+        If `o` is not None, it is a vector holding the indexes of the objects to score.
+        """
+        s = self.get_s_embedder().embed(s)
+        p = self.get_p_embedder().embed(p)
+        if o is None:
+            o = self.get_o_embedder().embed_all()
+        else:
+            o = self.get_o_embedder().embed(o)
+
+        return self._scorer.score_emb(s, p, o, combine="sp_")
+
+    def score_po(self, p: Tensor, o: Tensor, s: Tensor = None) -> Tensor:
+        r"""Compute scores for triples formed from a set of po-pairs and (or a subset of the) subjects.
+        `p` and `o` are vectors of common size :math:`n`, holding the indexes of the
+        relations and objects to score.
+        Returns an :math:`n\times E` tensor, where :math:`E` is the total number of
+        known entities. The :math:`(i,j)`-entry holds the score for triple :math:`(j,
+        p_i, o_i)`.
+        If `s` is not None, it is a vector holding the indexes of the objects to score.
+        """
+
+        if s is None:
+            s = self.get_s_embedder().embed_all()
+        else:
+            s = self.get_s_embedder().embed(s)
+        o = self.get_o_embedder().embed(o)
+        p = self.get_p_embedder().embed(p)
+
+        return self._scorer.score_emb(s, p, o, combine="_po")
+
+    def score_so(self, s: Tensor, o: Tensor, p: Tensor = None) -> Tensor:
+        r"""Compute scores for triples formed from a set of so-pairs and all (or a subset of the) relations.
+        `s` and `o` are vectors of common size :math:`n`, holding the indexes of the
+        subjects and objects to score.
+        Returns an :math:`n\times R` tensor, where :math:`R` is the total number of
+        known relations. The :math:`(i,j)`-entry holds the score for triple :math:`(s_i,
+        j, o_i)`.
+        If `p` is not None, it is a vector holding the indexes of the relations to score.
+        """
+        s = self.get_s_embedder().embed(s)
+        o = self.get_o_embedder().embed(o)
+        if p is None:
+            p = self.get_p_embedder().embed_all()
+        else:
+            p = self.get_p_embedder().embed(p)
+
+        return self._scorer.score_emb(s, p, o, combine="s_o")
+
+    def score_sp_po(
+        self, s: Tensor, p: Tensor, o: Tensor, entity_subset: Tensor = None
+    ) -> Tensor:
+        r"""Combine `score_sp` and `score_po`.
+        `s`, `p` and `o` are vectors of common size :math:`n`, holding the indexes of
+        the subjects, relations, and objects to score.
+        Each sp-pair and each po-pair is scored against the entities in `entity_subset`
+        (also holds indexes). If set to `entity_subset` is `None`, scores against all
+        entities.
+        The result is the horizontal concatenation of the outputs of
+        :code:`score_sp(s,p,entity_subset)` and :code:`score_po(p,o,entity_subset)`.
+        I.e., returns an :math:`n\times 2E` tensor, where :math:`E` is the size of
+        `entity_subset`. For :math:`j<E`, the :math:`(i,j)`-entry holds the score for
+        triple :math:`(s_i, p_i, e_j)`. For :math:`j\ge E`, the :math:`(i,j)`-entry
+        holds the score for triple :math:`(e_{j-E}, p_i, o_i)`.
+        """
+
+        s = self.get_s_embedder().embed(s)
+        p = self.get_p_embedder().embed(p)
+        o = self.get_o_embedder().embed(o)
+        if self.get_s_embedder() is self.get_o_embedder():
+            if entity_subset is not None:
+                all_entities = self.get_s_embedder().embed(entity_subset)
+            else:
+                all_entities = self.get_s_embedder().embed_all()
+            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+            po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
+        else:
+            if entity_subset is not None:
+                all_objects = self.get_o_embedder().embed(entity_subset)
+                all_subjects = self.get_s_embedder().embed(entity_subset)
+            else:
+                all_objects = self.get_o_embedder().embed_all()
+                all_subjects = self.get_s_embedder().embed_all()
+            sp_scores = self._scorer.score_emb(s, p, all_objects, combine="sp_")
+            po_scores = self._scorer.score_emb(all_subjects, p, o, combine="_po")
+        return torch.cat((sp_scores, po_scores), dim=1)
+
+class KgeRgnnModel(KgeModel):
+    r"""
+    This class extends the KgeModel with a RGNN Encoder between the embedders and the scoring
+    function. 
+    """
+    def __init__(
+        self,
+        config: Config,
+        dataset: Dataset,
+        scorer: Union[RelationalScorer, type],
+        create_embedders=True,
+        # encoder=True, # muss anders gehen
+        configuration_key=None,
+        init_for_load_only=False,
+    ):
+        super().__init__(config, dataset, scorer, 
+            create_embedders, configuration_key, init_for_load_only
+        )
+
+    # if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
+        self._encoder: KgeRgnnEncoder
+        self._encoder = KgeRgnnEncoder.create(
+            config,
+            dataset,
+            self.configuration_key + ".encoder",
+            self._entity_embedder,
+            self._relation_embedder,
+            init_for_load_only=init_for_load_only,
+        )
+
+        self._scorer: RelationalScorer
+        if type(scorer) == type:
+            self._scorer = scorer(
+                config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
+            )
+        else:
+            self._scorer = scorer
+
+    def prepare_job(self, job: "Job", **kwargs):
+        super().prepare_job(job, **kwargs)
+        self._encoder.prepare_job(job, **kwargs)
+
+    def get_rgnn_encoder(self) -> KgeRgnnEncoder:
+        return self._encoder
 
     def score_spo(self, s: Tensor, p: Tensor, o: Tensor, direction=None) -> Tensor:
         r"""Compute scores for a set of triples.
@@ -788,12 +943,7 @@ class KgeModel(KgeBase):
         score of triple :math:`(s_i, p_i, o_i)`.
 
         """
-        if not self.config.exists(self.configuration_key + ".encoder"):
-            s = self.get_s_embedder().embed(s)
-            p = self.get_p_embedder().embed(p)
-            o = self.get_o_embedder().embed(o)
-        else:
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
 
     def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None) -> Tensor:
@@ -809,16 +959,7 @@ class KgeModel(KgeBase):
         If `o` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        if not self.config.exists(self.configuration_key + ".encoder"):
-            s = self.get_s_embedder().embed(s)
-            p = self.get_p_embedder().embed(p)
-            if o is None:
-                o = self.get_o_embedder().embed_all()
-            else:
-                o = self.get_o_embedder().embed(o)
-        else:
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
-
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="sp_")
 
     def score_po(self, p: Tensor, o: Tensor, s: Tensor = None) -> Tensor:
@@ -834,16 +975,7 @@ class KgeModel(KgeBase):
         If `s` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        if not self.config.exists(self.configuration_key + ".encoder"):
-            if s is None:
-                s = self.get_s_embedder().embed_all()
-            else:
-                s = self.get_s_embedder().embed(s)
-            o = self.get_o_embedder().embed(o)
-            p = self.get_p_embedder().embed(p)
-        else:
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
-
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="_po")
 
     def score_so(self, s: Tensor, o: Tensor, p: Tensor = None) -> Tensor:
@@ -859,16 +991,7 @@ class KgeModel(KgeBase):
         If `p` is not None, it is a vector holding the indexes of the relations to score.
 
         """
-        if not self.config.exists(self.configuration_key + ".encoder"):
-            s = self.get_s_embedder().embed(s)
-            o = self.get_o_embedder().embed(o)
-            if p is None:
-                p = self.get_p_embedder().embed_all()
-            else:
-                p = self.get_p_embedder().embed(p)
-        else:
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
-
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="s_o")
 
     def score_sp_po(
@@ -891,38 +1014,15 @@ class KgeModel(KgeBase):
         holds the score for triple :math:`(e_{j-E}, p_i, o_i)`.
 
         """
-        # TODO: see what can be done here and if necessary.
-        if not self.config.exists(self.configuration_key + ".encoder"):
-            s = self.get_s_embedder().embed(s)
-            p = self.get_p_embedder().embed(p)
-            o = self.get_o_embedder().embed(o)
-            if self.get_s_embedder() is self.get_o_embedder():
-                if entity_subset is not None:
-                    all_entities = self.get_s_embedder().embed(entity_subset)
-                else:
-                    all_entities = self.get_s_embedder().embed_all()
-                sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
-                po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
-            else:
-                if entity_subset is not None:
-                    all_objects = self.get_o_embedder().embed(entity_subset)
-                    all_subjects = self.get_s_embedder().embed(entity_subset)
-                else:
-                    all_objects = self.get_o_embedder().embed_all()
-                    all_subjects = self.get_s_embedder().embed_all()
-                sp_scores = self._scorer.score_emb(s, p, all_objects, combine="sp_")
-                po_scores = self._scorer.score_emb(all_subjects, p, o, combine="_po")
-            
+        if entity_subset is not None:
+            s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
+                s, p, o, entity_subset
+            )
         else:
-            if entity_subset is not None:
-                s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
-                    s, p, o, entity_subset
-                )
-            else:
-                s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
-                    s, p, o, "all"
-                )
-            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
-            po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
+            s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
+                s, p, o, "all"
+            )
+        sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+        po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
         
         return torch.cat((sp_scores, po_scores), dim=1)

@@ -1,10 +1,10 @@
 from kge import Config, Dataset
-from kge.model.kge_model import KgeModel
+from kge.model.kge_model import KgeRgnnModel
 
 import importlib
 
 
-class RGCN(KgeModel):
+class RGCN(KgeRgnnModel):
     """
     This is a base model, which serves to combine an rgnn-encoder with a
     scoring function as decoder.
