@@ -1,0 +1,46 @@
+import: [rgnn_encoder, lookup_embedder, transe, conve, distmult]
+
+rgcn:
+  class_name: RGCN
+  # type: rgnn
+  entity_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_ # TODO: nachschauen!
+    dim: 500
+    regularize: ''
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 500
+    +++: +++
+  encoder:
+    type: rgnn_encoder
+    # CompGCN specific RGNN parameters:
+    edge_norm: True
+    edge_dropout: 0.5
+    self_edge_dropout: 0.2
+    activation: relu
+    emb_propagation_dropout: 0.0  # used after the propagation function in the rgnn layer
+                       # (except for self-edges )
+    emb_entity_dropout: 0.0  # used on the entity output of the rgnn layer
+    bias: True 
+    num_layers: 1
+    propagation: per_relation_block  # other rgcn option: per_relation_basis
+    num_blocks_or_bases: 100
+    # num_blocks: 5
+    composition: neighbor  # no composition: add up neighbors
+    # num_basis: -1
+    rel_transformation: self
+    +++: +++
+  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
+           # scoring functions. The original CompGCN model supports TransE,
+           # and Distmult but in principle any other function can be imported
+           # or passed
+    model: distmult
+    # transe:
+    #   l_norm: 1.01
+    #   +++: +++
+    scorer: DistMultScorer 
+    
