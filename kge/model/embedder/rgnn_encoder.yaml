@@ -1,29 +1,36 @@
 
 rgnn_encoder:
   class_name: RgnnEncoder
-  # dim: -1                     # -1 means: same as base_embedder: change for
-  # test run to very small
-  #initialize: normal_          # xavier, uniform, normal
-  #initialize_args:
-  #  +++: +++
-  # dropout: 0.                 # dropout used for embeddings
-  edge_norm: False
-  edge_dropout: 0.0
-  self_edge_dropout: 0.0
-  emb_propagation_dropout: 0.0  # used after the propagation function in the rgnn layer
-  # emb_self_loop_dropout: 0.1
-  emb_entity_dropout: 0.0  # used on the output of the rgnn layer
-  bias: True 
+
+  # arguments for all layers:
   num_layers: 2
   1_out_dim: 200
   2_in_dim: 200
   2_out_dim: 200
-  1_num_rel_bases: -1
-  num_blocks_or_bases: -1
-  propagation: direction  # use a different weight matrix for in-direction,
-  # out-direction and the self-loop
-  composition: sub
+
   activation: relu
   weight_init: xavier_normal_
+  bias: True 
+  bias_init: zeros_ # ones_, uniform_, normal_ ... (from torch.nn.init)
+  
+  weight_decomposition: None # block, basis, relation_basis
+  num_blocks_or_bases: -1
+
+  edge_dropout: 0.0 # drop edges from the graphs
+  self_edge_dropout: 0.0 # drop self-edges from the graph
+  emb_entity_dropout: 0.0  # used on the entity embedding output of the rgnn layer
+  
   rel_transformation: linear # self, linear, convoluted
+  
+  layer_type: message_passing # other options: torch_rgcn
+  # Specific Arguments for the MessagePassingLayer
+  message_passing_args:
+    propagation: direction  # per_relation, single, single_with_self_edge_weight
+    composition: sub # neighbor, mult, ccorr
+    edge_norm: True 
+    emb_propagation_dropout: 0.0 # used after the propagation function in the
+                                 # message passing layer
+  torch_rgcn_args:
+    vertical_stacking: False
+   
   
