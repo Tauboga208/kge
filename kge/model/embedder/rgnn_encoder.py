@@ -2,12 +2,12 @@ from kge.model import KgeRgnnEncoder, KgeBase
 from kge import Config, Dataset
 from kge.job import Job
 
+from kge.model.embedder.rgnn_utils import *
+
 import inspect
 import torch.nn
-# from torch.nn.init import xavier_normal_
 
 from typing import Optional, Tuple
-
 
 
 class MessagePassing(torch.nn.Module):
@@ -50,7 +50,7 @@ class MessagePassing(torch.nn.Module):
         return out
 
     def message(self, h_i, h_j, h_r, propagation_type, edge_norm=None, mode=""):
-
+        
         # TODO attention
         if propagation_type == "per_relation_basis":
             # calculate the basis decomposition weight a_br*v_b
@@ -74,8 +74,6 @@ class MessagePassing(torch.nn.Module):
         return h_j
 
     def edge_norm(self, edge_index, num_ent):
-        # computes the edge norm of the currently propagated index
-        # TODO: r-gcn hat 1/c_i statt 1/c_i,r?
         row, col = edge_index
         edge_weight = torch.ones_like(row).float()
         deg	= scatter_add(edge_weight, row, dim=0, dim_size=num_ent)	# Summing number of weights of the edges
@@ -92,8 +90,8 @@ class MessagePassing(torch.nn.Module):
         if isinstance(mode, str):
             mode = int(mode)
         weight = torch.einsum(
-            'bij,b->ij', self.basis_matrices, 
-            self.block_rel_basis_weights[mode]
+            'bij,b->ij', self.bases, 
+            self.comps[mode]
         )
         return weight
 
@@ -101,17 +99,13 @@ class MessagePassing(torch.nn.Module):
         # copied from the pytorch-rgcn
         if mode == "loop":
             return self.weights['w_{}'.format(mode)] 
-
         blocks = self.weights['w_{}'.format(mode)] 
         dim = blocks.dim()
-
         siz0 = blocks.shape[:-3]
         siz1 = blocks.shape[-2:]
-
         blocks2 = blocks.unsqueeze(-2)
-
         eye = self._attach_dim(
-            torch.eye(self.num_blocks_or_bases, device=self.device).unsqueeze(-2), dim - 3, 1
+            torch.eye(self.num_blocks_or_bases, device=self.device).unsqueeze(-2), dim-3, 1
             )
 
         return (blocks2 * eye).reshape(
@@ -126,125 +120,174 @@ class MessagePassing(torch.nn.Module):
 
 # 1 Build the layer
 # in_channels and out_channels are the embedding dim
-class RgnnLayer(MessagePassing):
+class MessagePassingLayer(MessagePassing):
+    r""" Rgnn Message Passing Layer. Flexible implementation of Rgnns Layers
+         with different propagation types (weights), composition functions, aggregation
+         functions and weight decompositions. 
+    """
     def __init__(
-        self, config, dataset, use_edge_norm, 
-        emb_propagation_dropout, emb_entity_dropout, bias, propagation_type, 
-        in_dim, out_dim, composition_function, activation, rel_transformation, 
-        edge_mask, self_edge_mask, weight_init, num_rel_bases=None, num_blocks_or_bases=None):
-        super(self.__class__, self).__init__(dataset)
+        self, 
+        config, 
+        dataset, 
+        edge_index, 
+        edge_type, 
+        in_dim,
+        out_dim, 
+        weight_init, 
+        bias_, 
+        bias_init,
+        self_edge_dropout, 
+        rel_transformation,
+        propagation,
+        composition,
+        use_edge_norm, 
+        emb_propagation_dropout, 
+        weight_decomposition=None, 
+        num_blocks_or_bases=None):
+        #super(self.__class__, self).__init__(dataset)
+        super(MessagePassingLayer, self).__init__(dataset)
 
         self.device	= config.get('job.device') 	
         # data stats and adjacency indices
         self.num_entities = dataset.num_entities()
         self.num_relations = dataset.num_relations() * 2 # with inverse edges TODO
-        self.edge_index = dataset.index("edge_index")
-        self.edge_type = dataset.index("edge_type")
+        self.edge_index = edge_index
+        self.edge_type = edge_type
+
         # input and output dimensions of the layer
         self.in_dim = in_dim
         self.out_dim = out_dim
 
-        self.rel_transformation = rel_transformation  
-        self.act = activation      
-        self.weight_init = weight_init # TODO make more flexible
-        self.bias_ = bias
-        self.use_edge_norm = use_edge_norm
+        self.use_edge_norm = use_edge_norm # TODO: make type: per relation, just degree... 
 
+        # set parameter configurations
+        self.weight_init = weight_init 
+        self.bias_ = bias_
         if self.bias_: 
-            self.register_parameter(
-                "bias", torch.nn.Parameter(torch.zeros(self.out_dim).to(self.device))
-            ) 
+            self.bias = self._get_bias_param(bias_init)
         else:
-            self.bn	= torch.nn.BatchNorm1d(self.out_dim).to(self.device)
-        
-        self.propagation_type = propagation_type
-        self.w_rel = self._get_param((self.in_dim, self.out_dim))
+            self.bn	= torch.nn.BatchNorm1d(self.out_dim).to(self.device) 
+        self.weight_decomposition = weight_decomposition
+        if self.weight_decomposition in ['block', 'basis']:
+            if propagation == "per_relation":
+                propagation = propagation + "_" + self.weight_decomposition
+                self.num_blocks_or_bases = num_blocks_or_bases
+            else:
+                raise RuntimeError("Weight Decomposition is only supported for per_relation propagation")        
+        self.propagation_type = propagation
+
+        self.rel_transformation = rel_transformation 
+        if self.rel_transformation == "linear":
+            self.w_rel = self._get_param((self.in_dim, self.out_dim))
+
+        # add relation for the self_loop
         self.loop_rel = self._get_param((1, self.in_dim)).to(self.device)
 
-        # decomposition. TODO: only execute when decomposition is on 
-        self.num_rel_bases = num_rel_bases
-        # basis relation vector
-        if self.num_rel_bases > 0:
+        # relation basis decomposition. 
+        if self.weight_decomposition == "relation_basis":
+            if num_blocks_or_bases < 1:
+                raise ValueError(
+                    f"At least 1 basis necessary for relation basis decomposition but {num_blocks_or_bases} given.")
+            self.num_rel_bases = num_blocks_or_bases
+            # basis decomposition parameters
             self.basis_vectors = self._get_param((self.num_rel_bases, self.in_dim))
-            self.relation_basis_weights = self._get_param((self.num_relations, self.num_rel_bases))
-        self.num_blocks_or_bases = num_blocks_or_bases
-
-        self._set_propagation_weights() # set the weights per mode according to the propagation type 
-        self._set_propagation_indices() # set the indices per mode according to the propagation type 
-        self._set_composition_function(composition_function) # TODO: getattr and helper
-
-        # embedding dropouts
-        # after propagation
+            self.relation_basis_weights = self._get_param((self.num_relations, self.num_rel_bases)) #TODO nachschauen Compgcn ob doppelte oder nicht
+        
+        # embedding dropout: after propagation
         self.prop_drop = torch.nn.Dropout(emb_propagation_dropout)
-        # after the layer
-        self.entity_drop = torch.nn.Dropout(emb_entity_dropout)
+        # self-loop dropout
+        self.self_edge_dropout = self_edge_dropout
 
-        # edge and self-loop dropout
-        self.edge_mask = edge_mask
-        self.self_edge_mask = self_edge_mask  
-		
+        # set weights and indices per mode according to the propagation type 
+        self._set_propagation_weights() 
+        self._set_propagation_indices() 
+        # retrieve the chosen composition function 
+        self._set_composition_function(composition) # TODO: getattr and helper
+
     def forward(self, x, r): 
 
-        # add self-loop to the relation embeddings
-        if self.num_rel_bases > 0:
-            r = torch.mm(self.relation_basis_weights, self.basis_vectors)
-        r = torch.cat([r, self.loop_rel], dim=0)
-        # propagate the messages once per mode
         
-        num_modes = len(self.modes)
-        # num_edges = len(self.edge_type)
+        if self.weight_decomposition == "relation_basis":
+            # combine bases with relation-specific combination
+            r = torch.mm(self.relation_basis_weights, self.basis_vectors)
+
+        # add self-loop to the relation embeddings
+        r = torch.cat([r, self.loop_rel], dim=0)
+
+        # initialise message passing output
         out = torch.zeros((self.num_entities, self.out_dim)).to(self.device)
+        # propagate the messages once per mode
+        num_modes = len(self.modes)
         for mode in self.modes:
+            # access the mode-specific edges
             node_index = self.node_indices[mode]
             rel_index = self.rel_indices[mode]
+            # set and calculate correct norm
             norm = None
             if self.use_edge_norm and mode != "loop":
                 norm = self.edge_norm(node_index, self.num_entities) 
+            # calculate message vectors and aggregate
             mode_message = self.propagate(
-                'add', node_index, rel_index, x=x, r=r, 
-                propagation_type = self.propagation_type, 
-                edge_norm=norm, mode=mode
+                aggregation="add", 
+                edge_index=node_index, 
+                edge_type=rel_index, 
+                x=x, 
+                r=r,
+                propagation_type=self.propagation_type, 
+                edge_norm=norm, 
+                mode=mode
             )
             if mode == "loop":
-                # hier kommt dann wahrsch. self-edge-drop hin
-                #mode_message_weighted = self.self_loop_drop(mode_message) *
-                #(1/num_modes)
                 mode_message_weighted = mode_message * (1/num_modes)
             else:
                 mode_message_weighted = self.prop_drop(mode_message) * (1/num_modes)
-            # TODO: look up why no dropout on self-messages or how to implement
-            # it flexibly --> dropout mode dict probably 
             out += mode_message_weighted # TODO allow other aggregations
-            # TODO think: is this already some kind of attention; node rel weighting?
 		
-        if self.bias_: 
-            out = out + self.bias
+        if self.bias_:
+            out = torch.add(out, self.bias)
         else: # TODO: möglich machen keins von beiden
             out = self.bn(out)
-        out = self.act(out)
-        out = self.entity_drop(out)
 
+        # transform the relation (None, linear or convoluted)
         rel = self._transform_relation(r)
-        
-        # TODO: make relation transformation more flexible
-        # print("Check that rGNN is computed")
-        return out, rel	# Ignoring the self loop inserted 
+
+        return out, rel	
 		
     def _get_param(self, shape):
+        # create and initialise weight
         param = torch.nn.Parameter(torch.empty(*shape, device=self.device))
-        self.weight_init(param)
-        return param
+        return self.weight_init(param)
+
+    def _get_bias_param(self, bias_init):
+        # create and initialise bias
+        self.register_parameter(
+            "bias", torch.nn.Parameter(torch.zeros(self.out_dim).to(self.device))
+        ) 
+        return bias_init(self.bias) 
 
     def _transform_relation(self, r):
+        # transforms the relation embedding. Returns without self-loop relation
         if self.rel_transformation == "self":
             return r[:-1]
         elif self.rel_transformation == "linear":
             return torch.matmul(r, self.w_rel)[:-1]	
         else:
-            raise NotImplementedError("""The relation transformation is not
-            supported. Try self, linear or convoluted.""")
+            raise NotImplementedError(f"""The relation transformation 
+            {self.rel_transformation} is not supported. 
+            Try self, linear or convoluted.""")
 
     def _set_propagation_weights(self):
+        r""" Sets the weights according to the propagation type. 
+             For example, if the propagation is 'direction', one weight matrix
+             is created for the original edges, one for reciprocal edges and one for
+             self-loops.
+             'per_relation' creates one weight for each relation. Because this is
+             computationally expensive, basis or block decomposition is
+             applied.
+             'single' has one weight for all relations, inclusively the
+             self-loop, whereas 'single_with_self_edge_weight' has two weights:
+             one for all relations except self-loops and one for self-loops.  
+        """
         
         self.weights = torch.nn.ParameterDict() 
 
@@ -261,10 +304,10 @@ class RgnnLayer(MessagePassing):
             modes = [str(rel.item()) for rel in self.edge_type.unique()]
             self.self_edge_weight = True
             if self.propagation_type == "per_relation_basis":
-                self.basis_matrices = self._get_param(
+                self.bases = self._get_param(
                     (self.num_blocks_or_bases, self.in_dim, self.out_dim)
                 )
-                self.block_rel_basis_weights = self._get_param(
+                self.comps = self._get_param(
                     (self.num_relations, self.num_blocks_or_bases)
                 )
                 self.loop_weight = self._get_param((self.in_dim, self.out_dim))
@@ -278,16 +321,16 @@ class RgnnLayer(MessagePassing):
 
         else:
             raise NotImplementedError(
-                "The specified propagation type is not supported: {}".format(self.propagation_type)
-            )
+                f"Propagation type {self.propagation_type} is not supported.")
 
         # add a separate weight matrix for the self-edge
         if self.self_edge_weight:
             modes += ["loop"] 
  
         for mode in modes:
-            # cannot be defined here as the weight dict only takes parameters,
-            # computed tensors
+            # basis and block weights cannot fully be defined here as the weight dict 
+            # only takes parameters,
+            # not results of computations with parameters
             if not self.propagation_type == "per_relation_basis": 
                 if self.propagation_type == "per_relation_block":
                     if mode == "loop":
@@ -304,85 +347,311 @@ class RgnnLayer(MessagePassing):
 
         self.modes = modes
 
-    def _set_propagation_indices(self):  
+    def _set_propagation_indices(self): 
+        r""" selects the edges according to the mode.
+        """ 
         ## the right indices for the propagation of the weight types
         self.node_indices = dict()
         self.rel_indices = dict()
 
-        # edge dropout
-        edge_index_masked = self.edge_index[:, self.edge_mask]
-        edge_type_masked = self.edge_type[self.edge_mask]
-
-        # self-loop
+        # construct index for self-loop
+        # creates an edge index to itself for every node, e.g. 3-3 or 156-156
         self_node_index = torch.stack(
-            [torch.arange(self.num_entities), torch.arange(self.num_entities)]
-        ).to(self.device)
+            [torch.arange(self.num_entities), torch.arange(self.num_entities)]).to(self.device)
         self_rel_index = torch.full(
-            (self.num_entities,), self.num_relations, dtype=torch.long).to(self.device)
-        # self-edge dropout
-        self_node_index_masked = self_node_index[:, self.self_edge_mask]
-        self_rel_index_masked = self_rel_index[self.self_edge_mask]
+            (self_node_index.size(1),), self.num_relations, dtype=torch.long).to(self.device)
+            
+        # apply self-edge dropout
+        self_edge_mask = torch.rand(self.num_entities) > self.self_edge_dropout
+        self_node_index_masked = self_node_index[:, self_edge_mask]
+        self_rel_index_masked = self_rel_index[self_edge_mask]
 
+        # slice edges according to modes of propagation type
         if self.propagation_type == "single":    
             self.node_indices[""] = torch.cat(
-                [edge_index_masked, self_node_index], dim=1)            
+                [self.edge_index, self_node_index_masked], dim=1)            
             self.rel_indices[""] = torch.cat(
-                [edge_type_masked, self_rel_index], dim=0)
+                [self.edge_type, self_rel_index_masked], dim=0)
             self.self_edge_weight = False
 
         elif self.propagation_type == "single_with_self_edge_weight": 
-            self.node_indices[""] = edge_index_masked
-            self.rel_indices[""] = edge_type_masked
+            self.node_indices[""] = self.edge_index
+            self.rel_indices[""] = self.edge_type
 
         elif self.propagation_type == "direction":
-            num_edges = edge_index_masked.size(1) // 2
+            num_edges = self.edge_index.size(1) // 2
 
-            self.node_indices["in"] = edge_index_masked[:, :num_edges]
-            self.node_indices["out"] = edge_index_masked[:, num_edges:]
+            self.node_indices["in"] = self.edge_index[:, :num_edges]
+            self.node_indices["out"] = self.edge_index[:, num_edges:]
 
-            self.rel_indices["in"] = edge_type_masked[:num_edges]
-            self.rel_indices["out"] = edge_type_masked[num_edges:]
+            self.rel_indices["in"] = self.edge_type[:num_edges]
+            self.rel_indices["out"] = self.edge_type[num_edges:]
 
         elif self.propagation_type in ["per_relation_basis", "per_relation_block"]:
             for rel in range(self.num_relations):
                 # get the indices of the edges with the specific relation type
-                rel_index = (edge_index_masked == rel).nonzero(as_tuple=True)[0]
-                self.node_indices[str(rel)] = edge_index_masked[:, rel_index]
-                self.rel_indices[str(rel)] = edge_type_masked[rel_index] 
+                rel_index = (self.edge_index == rel).nonzero(as_tuple=True)[0]
+                self.node_indices[str(rel)] = self.edge_index[:, rel_index]
+                self.rel_indices[str(rel)] = self.edge_type[rel_index] 
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Propagation {self.propagation_type} is not supported.")
 
         if self.self_edge_weight:    
-            # creates an edge index to itself for every node, e.g. 3-3 or 156-156
             self.node_indices["loop"] = self_node_index_masked
             self.rel_indices["loop"] = self_rel_index_masked
     
     def _set_composition_function(self, composition_function):
-        # TODO: think of smarter way --> with getattr? and definition below
-        # TODO: add the others for the other models
-        if composition_function == "neighbor":
-            def neighbor(h_i, h_j, h_r):
-                return h_j
-            self.composition = neighbor
-        elif composition_function == "sub":
-            def sub(h_i, h_j, h_r):
-                return h_j-h_r   
-            self.composition = sub
-        elif composition_function == "mult":
-            def mult(h_i, h_j, h_r):
-                return h_j*h_r   
-            self.composition = mult
-        elif composition_function == "ccorr":
-            def ccorr(h_i, h_j, h_r):
-                return torch.irfft(
-                    com_mult(conj(torch.rfft(h_j, 1)), torch.rfft(h_r, 1)),
-                    1, 
-                    signal_sizes=(h_r.shape[-1],)
-                )  
-            self.composition = ccorr
+        try:
+            self.composition = globals()[composition_function]
+        except Exception as e:
+             raise NotImplementedError(
+                 f"Composition Function {composition_function} not found.")
+
+class TorchRgcnLayer(torch.nn.Module):
+    r""" Layer closely adapted from the sparse matrix implementation of the
+    Link Prediction torch-rgcn: https://arxiv.org/pdf/2107.10015.pdf.
+    Uses a sparse, stacked adjacency matrix to speed up computation.
+
+    """
+    def __init__(
+        self,
+        config, 
+        dataset,
+        edge_index,
+        edge_type,
+        in_dim,
+        out_dim,
+        weight_init,
+        bias_,
+        bias_init,
+        self_edge_dropout=None,
+        weight_decomposition=None,
+        num_blocks_or_bases=None, 
+        vertical_stacking=True):
+        super(TorchRgcnLayer, self).__init__()
+
+        self.device	= config.get('job.device') 
+
+        # compute necessary data statistics
+        self.num_entities = dataset.num_entities()
+        self.orig_num_relations = dataset.num_relations()
+        self.num_relations = dataset.num_relations() * 2 + 1# with inverse edges TODO
+
+        # set the graph indices and layer dimensions
+        self.edge_index = edge_index
+        self.edge_type =  edge_type
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
+        # set parameter configurations and initialise parameters 
+        self.weight_init = weight_init
+        self.bias_ = bias
+        self.bias_init = bias_init
+        self.weight_decomposition = weight_decomposition
+        self.num_blocks_or_bases =num_blocks_or_bases 
+        if self.bias_: 
+            self.bias = self._get_and_init_bias_param(bias_init)
+        self._set_weights()
+
+        # specify self edge dropout and adjacency stacking
+        self.self_edge_dropout = self_edge_dropout
+        self.vertical_stacking = vertical_stacking
+        
+
+    def forward(self, x, r):
+
+        # set weights depending on the decomposition
+        if self.weight_decomposition not in ["basis", "block"]:
+            weights = self.weights
+        elif self.weight_decomposition == "basis":
+            weights = torch.einsum("rb, bio -> rio", self.comps, self.bases)
+        elif self.weight_decomposition == "block":
+            pass # the block weights are set differently depending on the stacking of A
+        
+        # add self edge (with applied dropout) to edge_index and edge_type
+        edge_index, edge_type = self._add_self_edge(self.self_edge_dropout)
+
+        # compute stacked indices (either vertical oder horizontal)
+        adj_indices, adj_size = self._stack_adj_matrices(edge_index, edge_type)
+        num_edges = adj_indices.size(0)
+        vals = torch.ones(num_edges, dtype=torch.float, device=self.device)
+
+        # apply normalisation depending on stacking
+        sums = self._sum_sparse(adj_indices, vals, adj_size)
+        if not self.vertical_stacking:
+            # Rearrange column-wise normalised value to reflect original order (because of transpose-trick)
+            #n = self.num_orig_edges
+            #i = self.num_self_edges
+            sums = torch.cat(
+                [sums[self.num_orig_edges : 2*self.num_orig_edges], 
+                 sums[:self.num_orig_edges], sums[-self.num_self_edges:]], dim=0)
+        vals = vals / sums
+
+        # build sparse adjacency matrix
+        adj = torch.sparse.FloatTensor(
+            indices=adj_indices.t(), values=vals, size=adj_size).to(self.device)
+
+        # compute convolution
+        if self.vertical_stacking:
+            if self.weight_decomposition == 'block':
+                weights = self._calculate_block_weights(self.blocks)
+                weights = torch.cat([weights, self.block_self.unsqueeze(0)], dim=0)
+            AX = torch.spmm(adj, x)
+            AX = AX.view(self.num_relations, self.num_entities, self.in_dim)
+            out = torch.einsum('rio, rni -> no', weights, AX)
+        else: # horizontal stacking
+            if self.weight_decomposition == "block":
+                num_rels = self.num_relations - 1
+                block_x = x.view(
+                    self.num_entities, self.num_blocks_or_bases, self.block_row_dim)
+                XW = torch.einsum('nbi, rbio -> rnbo', block_x, self.blocks).contiguous()
+                XW = XW.view(num_rels, self.num_entities, self.out_dim)
+                self_XW = torch.einsum('ni, io -> no', x, self.block_self)[None, :, :]
+                XW = torch.cat([XW, self_XW], dim=0)
+                out = torch.mm(adj, XW.view(self.num_relations * self.num_entities, self.out_dim))
+            else:
+                XW = torch.einsum('ni, rio -> rno', x, weights).contiguous()
+                out = torch.mm(adj, XW.view(self.num_relations * self.num_entities, self.out_dim))
+        if self.bias is not None:
+            out = torch.add(out, self.bias)
+                
+        return out, r
+
+    def _set_weights(self):
+
+        if self.weight_decomposition not in  ["basis", "block"]:
+            if self.weight_decomposition != "None":
+                print(f"""Decomposition {self.weight_decomposition} not supported. 
+                Message Passing is executed with unrestrained weights.""")
+            self.weights = self._get_and_init_w_param((self.num_relations, self.in_dim, self.out_dim))
+            
+        elif self.weight_decomposition == "basis":
+            if self.num_blocks_or_bases <= 0:
+                raise ValueError("Number of Bases has to be larger than zero for Basis Decomposition")
+            else:
+                self.bases = self._get_and_init_w_param((self.num_blocks_or_bases, self.in_dim, self.out_dim))
+                self.comps = self._get_and_init_w_param((self.num_relations, self.num_blocks_or_bases))
+                
+        elif self.weight_decomposition == "block":
+            self.block_row_dim, row_modulo = divmod(self.in_dim, self.num_blocks_or_bases)
+            self.block_col_dim, col_modulo = divmod(self.out_dim, self.num_blocks_or_bases)
+                # check that the weight dims are divisible by the blocks
+            if row_modulo != 0 or col_modulo != 0:
+                raise RuntimeError(f"""The dimensions of the weight matrix
+                    {self.in_dim}, {self.out_dim} are not dividable by the 
+                    number of blocks {self.num_blocks_or_bases}.""")
+            # initialise blocks with schichtkrull_normal_
+            blocks = torch.nn.Parameter(
+                torch.empty((self.num_relations-1, self.num_blocks_or_bases, 
+                self.block_row_dim, self.block_col_dim), device=self.device))
+            self.blocks = schlichtkrull_normal_(
+                blocks, shape=[self.orig_num_relations, self.block_row_dim])
+            block_self = torch.nn.Parameter(
+                torch.empty((self.in_dim, self.out_dim), device=self.device))
+            self.block_self = schlichtkrull_normal_(
+                block_self, shape=[self.orig_num_relations, self.block_row_dim])
+
+    def _calculate_block_weights(self, blocks):
+        dim = blocks.dim()
+        siz0 = blocks.shape[:-3]
+        siz1 = blocks.shape[-2:]
+        blocks2 = blocks.unsqueeze(-2)
+        eye = self._attach_dim(
+            torch.eye(self.num_blocks_or_bases, device=self.device).unsqueeze(-2), dim-3, 1
+            )
+
+        return (blocks2 * eye).reshape(
+            siz0 + torch.Size(torch.tensor(siz1) * self.num_blocks_or_bases)
+        )
+
+    def _attach_dim(self, v, n_dim_to_prepend=0, n_dim_to_append=0):
+        # from Pytorch RGCN
+        return v.reshape(
+            torch.Size([1] * n_dim_to_prepend) + v.shape + torch.Size([1] * n_dim_to_append)
+        )
+
+    def _add_self_edge(self, self_edge_dropout):
+        # apply only self-edges on nodes that are in the edge-dropped graph
+        #left_nodes = torch.cat([edge_index[0, :], edge_index[1, :]]).unique()
+
+        self_node_index = torch.stack(
+            [torch.arange(self.num_entities), torch.arange(self.num_entities)]).to(self.device)
+        self_rel_index = torch.full(
+            (self_node_index.size(1),), self.num_relations-1, dtype=torch.long).to(self.device)
+            # self-edge dropout
+        self_edge_mask = torch.rand(self.num_entities) > self_edge_dropout
+        self_node_index_masked = self_node_index[:, self_edge_mask]
+        self_rel_index_masked = self_rel_index[self_edge_mask]
+
+        self.num_orig_edges = self.edge_index.size(1)//2
+        self.num_self_edges = self_rel_index_masked.size(0)
+            
+        edge_index_plus = torch.cat([self.edge_index, self_node_index_masked], dim=1)            
+        edge_type_plus = torch.cat([self.edge_type, self_rel_index_masked], dim=0)
+        
+        return edge_index_plus, edge_type_plus
+
+
+    def _get_and_init_w_param(self, shape):
+        param = torch.nn.Parameter(torch.empty(*shape, device=self.device))
+        param = self.weight_init(param)
+        return param
+
+    def _get_and_init_bias_param(self, bias_init):
+        self.register_parameter(
+            "bias", torch.nn.Parameter(torch.zeros(self.out_dim).to(self.device))
+        ) 
+        return bias_init(self.bias) 
+
+    def _stack_adj_matrices(self, edge_index, edge_type):
+        """
+        Computes a sparse adjacency matrix for the given graph (the adjacency matrices of all
+        relations are stacked vertically).
+        """
+        
+        n, r = self.num_entities, self.num_relations
+        size = (r * n, n) if self.vertical_stacking else (n, r * n)
+
+        fr, to = edge_index[0, :], edge_index[1, :] 
+        offset = edge_type * n
+        if self.vertical_stacking:
+            fr = offset + fr
         else:
-             raise NotImplementedError
-       # self.composition = foo
+            to = offset + to
+
+        indices = torch.cat([fr[:, None], to[:, None]], dim=1).to(self.device)
+
+        return indices, size
+
+    def _sum_sparse(self, indices, values, size):
+        """
+        Sum the rows or columns of a sparse matrix, and redistribute the
+        results back to the non-sparse row/column entries
+        Arguments are interpreted as defining sparse matrix.
+
+        Source: https://github.com/pbloem/gated-rgcn/blob/1bde7f28af8028f468349b2d760c17d5c908b58b/kgmodels/util/util.py#L304
+        """
+
+        assert len(indices.size()) == len(values.size()) + 1
+
+        k, r = indices.size()
+
+        if not self.vertical_stacking:
+            # Transpose the matrix for column-wise normalisation
+            indices = torch.cat([indices[:, 1:2], indices[:, 0:1]], dim=1)
+            size = size[1], size[0]
+
+        ones = torch.ones((size[1], 1), device=self.device)
+        #if self.device == 'cuda':
+        #    values = torch.cuda.sparse.FloatTensor(indices.t(), values, torch.Size(size))
+        #else:
+        values = torch.sparse.FloatTensor(indices.t(), values, torch.Size(size)).to(self.device)
+        sums = torch.spmm(values, ones)
+        sums = sums[indices[:, 0], 0]
+
+        return sums # .view(k)
+
+
 
 class RgnnModel(KgeBase):
     def __init__(
@@ -395,71 +664,88 @@ class RgnnModel(KgeBase):
     ):
         super().__init__(config, dataset, configuration_key)
 
-        # self.edge_index, self.edge_type = self.dataset.construct_adjacency()
+        device = self.config.get("job.device")
+
+        # indices
         edge_index = self.dataset.index("edge_index")
-        # edge_type = self.dataset.index("edge_type")
-        num_edges = edge_index.size(1)
+        edge_type = self.dataset.index("edge_type")
+
+        # data stats
         num_entities = self.dataset.num_entities()
+        num_edges = edge_index.size(1)
+
+        # layer input size and number
         dim = dim
         num_layers = self.get_option("num_layers")
-        device = self.config.get("job.device")
-        emb_propagation_dropout = self.get_option("emb_propagation_dropout")
-        # self_loop_dropout = self.get_option("self_loop_dropout")
-        emb_entity_dropout = self.get_option("emb_entity_dropout")
-        bias = self.get_option("bias")
-        composition = self.get_option("composition")
-        propagation = self.get_option("propagation")
-        use_edge_norm = self.get_option("edge_norm")
-        num_blocks_or_bases = self.get_option("num_blocks_or_bases")
-        rel_transformation = self.get_option("rel_transformation")
+        
         # activation function
+        act_key = self.get_option("activation")
         try:
-            activation = getattr(torch.nn.functional, self.get_option("activation"))
+            self.activation = getattr(torch.nn.functional, act_key)
         except Exception as e:
             raise ValueError(
-                "invalid activation function: {}".format(
-                    self.get_option("activation")
-                )
-            ) from e
-
-        # weight initialisation
+                f"invalid activation function: {act_key}") from e
+        
+        # parameter configurations
+        bias = self.get_option("bias")
+        weight_decomposition = self.get_option("weight_decomposition")
+        num_blocks_or_bases = self.get_option("num_blocks_or_bases")
+        weight_key = self.get_option("weight_init")
         try:
-            weight_init = getattr(torch.nn.init, self.get_option("weight_init"))
+            # try to find it first from torch.nn.init
+            weight_init = getattr(torch.nn.init, weight_key)
+        except AttributeError:
+            # then check user defined init functions (can also be imported from rgnn_utils)
+            weight_init = globals()[weight_key]
         except Exception as e:
-            raise ValueError(#
-                "invalid weight initialisaiton: {}".format(
-                    self.get_option("weight_init")
-                )
-            ) from e
+            raise ValueError(
+                f"Invalid weight initialisation: {weight_key}") from e
+        if bias:
+            bias_key = self.get_option("bias_init")
+            try:
+                bias_init = getattr(torch.nn.init, bias_key)
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid bias initialisation: {bias_key}" ) from e
+        else:
+            bias_init = None
+        
+        # hidden dropout
+        self.emb_entity_dropout = torch.nn.Dropout(self.get_option("emb_entity_dropout"))
+        # transformation of relation embedding
+        rel_transformation = self.get_option("rel_transformation")
 
-        # edge and self-edge dropout
-        # edge_dropout: make sure that the respective inverses get dropped as
-        # well
-        # TODO: compatibility in case of no inverse relations
+        # layer-type-specific options
+        self.layer_type = self.get_option("layer_type")
+        specific_layer_key = self.layer_type + "_args."
+        if self.layer_type == "message_passing":
+            composition = self.get_option(specific_layer_key + "composition")
+            propagation = self.get_option(specific_layer_key + "propagation")
+            use_edge_norm = self.get_option(specific_layer_key + "edge_norm")
+            emb_propagation_dropout = self.get_option(specific_layer_key + "emb_propagation_dropout")
+        elif self.layer_type == "torch_rgcn":
+            vertical_stacking = self.get_option(specific_layer_key + "vertical_stacking")
+
+        # Edge dropout
         edge_dropout = self.get_option("edge_dropout")
         edge_mask_one_direction = torch.rand(int(num_edges/2)) > edge_dropout
+        # This way corresponding reciprocal edges get dropped as well
         edge_mask = torch.cat([edge_mask_one_direction, edge_mask_one_direction])
-        
-        self_edge_dropout = self.get_option("self_edge_dropout")
-        self_edge_mask = torch.rand(num_entities) > self_edge_dropout
-        
+        edge_index_dropped = edge_index[:, edge_mask]
+        edge_type_dropped = edge_type[edge_mask]
 
+        # Self-edges are dropped in the layers themselves
+        self_edge_dropout = self.get_option("self_edge_dropout")
+        
+        # Add layers
         self.gnn_layers = torch.nn.ModuleList()
         for i in range(num_layers):
-            # TODO in_dim and out dim: factor out? TEST THIS
+            # set right layer dimensions
             if i == 0:
                 self.in_dim = dim # take it from the embedders 
             else:
                 # take the output dim of the previous layer as input dim
                 self.in_dim = self.out_dim
-                # try to read from config, if not take out_dim from last layer 
-                # TODO: muss das nicht aus Prinzip immer das out_dim des
-                # letzten sein?   
-                # try:
-                #     in_dim_key = str(i + 1) + "_in_dim"
-                #     self.in_dim = self.get_option(in_dim_key)
-                # except KeyError:
-                #     self.in_dim = self.out_dim
             try:
                 # try to read from config, if not there take same dim as in_dim
                 out_dim_key = str(i + 1) + "_out_dim"
@@ -467,32 +753,66 @@ class RgnnModel(KgeBase):
             except KeyError:
                 self.out_dim = in_dim
             
-            # in case of relation basis decomposition, get the number of basis
-            # vectors of the layer
-            try:
-                num_rel_bases = self.get_option(str(i + 1) + "_num_rel_bases")
-            except KeyError:
-                num_rel_bases = -1
+            # in case of relation basis decomposition only apply it in the
+            # first layer
+            if weight_decomposition == "relation_basis" and i != 0:
+                weight_decomposition = None
 
-
-            # TODO: kann man das besser verpacken? oder doch die config einfach
-            # mitgeben?
-            self.gnn_layers.append(
-                RgnnLayer(
-                    self.config, self.dataset, use_edge_norm, 
-                    emb_propagation_dropout, emb_entity_dropout, 
-                    bias, propagation, self.in_dim, self.out_dim, composition, 
-                    activation, rel_transformation, edge_mask, self_edge_mask,
-                    weight_init, num_rel_bases, num_blocks_or_bases     
+            # append layers according to layer type
+            if self.layer_type == "message_passing":
+                self.gnn_layers.append(
+                    MessagePassingLayer(
+                        self.config, 
+                        self.dataset, 
+                        edge_index_dropped, 
+                        edge_type_dropped, 
+                        self.in_dim, 
+                        self.out_dim,
+                        weight_init, 
+                        bias, 
+                        bias_init,
+                        self_edge_dropout, 
+                        rel_transformation,
+                        propagation, 
+                        composition, 
+                        use_edge_norm, 
+                        emb_propagation_dropout,
+                        weight_decomposition, 
+                        num_blocks_or_bases  
+                    )
                 )
-            )
-            
+            elif self.layer_type == "torch_rgcn":
+                self.gnn_layers.append(
+                    TorchRgcnLayer(
+                        self.config, 
+                        self.dataset,
+                        edge_index_dropped,
+                        edge_type_dropped,
+                        self.in_dim,
+                        self.out_dim,
+                        weight_init,
+                        bias,
+                        bias_init,
+                        self_edge_dropout,
+                        weight_decomposition,
+                        num_blocks_or_bases,
+                        vertical_stacking
+                    )
+                )
+            else:
+                raise NotImplementedError(
+                    f"{self.layer_type} not supported. Use message_passing or torch_rgcn")
 
     def forward(self, x, r):
         for i in range(len(self.gnn_layers)):
+            if self.layer_type == "torch_rgcn":
+                x = self.activation(x)
             x, r = self.gnn_layers[i](x, r)
+            if self.layer_type == "message_passing":
+                x = self.activation(x)
+            x = self.emb_entity_dropout(x)
 
-        return x, r[:self.dataset.num_relations()]
+        return x, r[:self.dataset.num_relations()] # TODO: die ganzen falls reciprocal?
 
 
 class RgnnEncoder(KgeRgnnEncoder):
@@ -508,33 +828,44 @@ class RgnnEncoder(KgeRgnnEncoder):
         )
         self.device = self.config.get("job.device")
 
+        # set the embedders for the original node and relation embeddings
         self.entity_embedder = entity_embedder
         self.relation_embedder = relation_embedder
-        #x = self.entity_embedder.embed_all().to(self.device) 
-        #r = self.relation_embedder.embed_all().to(self.device) 
 
+        # get the dimensions of the entity embedding to use for the first layer
         dim = self.entity_embedder.dim
+
+        # create the Rgnn Model
         self.rgnn = RgnnModel(
             self.config, self.dataset, self.configuration_key, dim
         )
 
-        # self.rel_transformation = self.config.get("rel_transformation")
+    def encode_spo(self, s, p, o, entity_subset=None):
+        # get embeddings for all nodes and relations
+        ent_embeddings, rel_embeddings = self._run_rgnn()
+        # select the embeddings for the current batch
+        s, p, o = self._select_embeddings(ent_embeddings, rel_embeddings, s, p, o)
 
-        #self._stored_batch_embeddings = None
-        
-
-    # def _reset_batch_embeddings(self):
-    #     self._stored_batch_embeddings = None
-
-    # def prepare_job(self, job: "Job", **kwargs):
-    #     from kge.job import TrainingJob
-
-    #     super().prepare_job(job, **kwargs)
-    #     if isinstance(job, TrainingJob):
-    #         job.pre_batch_hooks.append(lambda job: self._reset_batch_embeddings())
+        # special selection for the .score_sp_po() method of the RgnnModel
+        if isinstance(entity_subset, torch.Tensor):
+            ent_sub = torch.index_select(ent_embeddings, 0, entity_subset.long())
+            return s, p, o, ent_sub
+        elif entity_subset == "all":
+            ent_sub = ent_embeddings
+            return s, p, o, ent_sub
+        # for all other scoring modes return batch embeddings of s, p and o
+        else:
+            return s, p, o
 
     def _run_rgnn(self):
+        # specify if model runs for training or evaluation
+        job_type = self.config.get("job.type")
+        if job_type == "train":
+            self.rgnn.train()
+        else:
+            self.rgnn.eval()
 
+        # compute convolution
         ent_emb, rel_emb = self.rgnn.forward(
             self.entity_embedder.embed_all(), 
             self.relation_embedder.embed_all()
@@ -542,20 +873,8 @@ class RgnnEncoder(KgeRgnnEncoder):
 
         return ent_emb, rel_emb
 
-    def encode_spo(self, s, p, o, entity_subset=None):
-        ent_embeddings, rel_embeddings = self._run_rgnn()
-        s, p, o = self._select_embeddings(ent_embeddings, rel_embeddings, s, p, o)
-
-        if isinstance(entity_subset, torch.Tensor):
-            ent_sub = torch.index_select(ent_embeddings, 0, entity_subset.long())
-            return s, p, o, ent_sub
-        elif entity_subset == "all":
-            ent_sub = ent_embeddings
-            return s, p, o, ent_sub
-        else:
-            return s, p, o
-
     def _select_embeddings(self, entity_embeddings, relation_embeddings, s, p, o):
+        # select the embeddings of the current batch from all embeddings
         if s is not None:
             s = torch.index_select(entity_embeddings, 0, s.long())
         else:
@@ -570,124 +889,3 @@ class RgnnEncoder(KgeRgnnEncoder):
             o = entity_embeddings
         
         return s, p, o
-
-
-# ---- Helper Functions ---- #
-
-def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
-    if dim < 0:
-        dim = other.dim() + dim
-    if src.dim() == 1:
-        for _ in range(0, dim):
-            src = src.unsqueeze(0)
-    for _ in range(src.dim(), other.dim()):
-        src = src.unsqueeze(-1)
-    src = src.expand_as(other)
-    return src
-
-def scatter_sum(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-                out: Optional[torch.Tensor] = None,
-                dim_size: Optional[int] = None) -> torch.Tensor:
-    index = broadcast(index, src, dim)
-    if out is None:
-        size = list(src.size())
-        if dim_size is not None:
-            size[dim] = dim_size
-        elif index.numel() == 0:
-            size[dim] = 0
-        else:
-            size[dim] = int(index.max()) + 1
-        out = torch.zeros(size, dtype=src.dtype, device=src.device)
-        return out.scatter_add_(dim, index, src)
-    else:
-        return out.scatter_add_(dim, index, src)
-
-
-def scatter_add(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-                out: Optional[torch.Tensor] = None,
-                dim_size: Optional[int] = None) -> torch.Tensor:
-    return scatter_sum(src, index, dim, out, dim_size)
-
-
-def scatter_mul(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-                out: Optional[torch.Tensor] = None,
-                dim_size: Optional[int] = None) -> torch.Tensor:
-    return torch.ops.torch_scatter.scatter_mul(src, index, dim, out, dim_size)
-
-
-def scatter_mean(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-                 out: Optional[torch.Tensor] = None,
-                 dim_size: Optional[int] = None) -> torch.Tensor:
-
-    out = scatter_sum(src, index, dim, out, dim_size)
-    dim_size = out.size(dim)
-
-    index_dim = dim
-    if index_dim < 0:
-        index_dim = index_dim + src.dim()
-    if index.dim() <= index_dim:
-        index_dim = index.dim() - 1
-
-    ones = torch.ones(index.size(), dtype=src.dtype, device=src.device)
-    count = scatter_sum(ones, index, index_dim, None, dim_size)
-    count[count < 1] = 1
-    count = broadcast(count, out, dim)
-    if out.is_floating_point():
-        out.true_divide_(count)
-    else:
-        out.floor_divide_(count)
-    return out
-
-
-def scatter_min(
-        src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-        out: Optional[torch.Tensor] = None,
-        dim_size: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    return torch.ops.torch_scatter.scatter_min(src, index, dim, out, dim_size)
-
-
-def scatter_max(
-        src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-        out: Optional[torch.Tensor] = None,
-        dim_size: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    return torch.ops.torch_scatter.scatter_max(src, index, dim, out, dim_size)
-
-
-def scatter(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-            out: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
-            reduce: str = "sum") -> torch.Tensor:
-    if reduce == 'sum' or reduce == 'add':
-        return scatter_sum(src, index, dim, out, dim_size)
-    if reduce == 'mul':
-        return scatter_mul(src, index, dim, out, dim_size)
-    elif reduce == 'mean':
-        return scatter_mean(src, index, dim, out, dim_size)
-    elif reduce == 'min':
-        return scatter_min(src, index, dim, out, dim_size)[0]
-    elif reduce == 'max':
-        return scatter_max(src, index, dim, out, dim_size)[0]
-    else:
-        raise ValueError
-
-def scatter_(name, src, index, dim_size=None):
-	r"""Aggregates all values from the :attr:`src` tensor at the indices
-	specified in the :attr:`index` tensor along the first dimension.
-	If multiple indices reference the same location, their contributions
-	are aggregated according to :attr:`name` (either :obj:`"add"`,
-	:obj:`"mean"` or :obj:`"max"`).
-
-	Args:
-		name (string): The aggregation to use (:obj:`"add"`, :obj:`"mean"`,
-			:obj:`"max"`).
-		src (Tensor): The source tensor.
-		index (LongTensor): The indices of elements to scatter.
-		dim_size (int, optional): Automatically create output tensor with size
-			:attr:`dim_size` in the first dimension. If set to :attr:`None`, a
-			minimal sized output tensor is returned. (default: :obj:`None`)
-
-	:rtype: :class:`Tensor`
-	"""
-	if name == 'add': name = 'sum'
-	assert name in ['sum', 'mean', 'max']
-	out = scatter(src, index, dim=0, out=None, dim_size=dim_size, reduce=name)
-	return out[0] if isinstance(out, tuple) else out
