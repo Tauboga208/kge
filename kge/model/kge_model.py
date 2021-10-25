@@ -915,10 +915,13 @@ class KgeRgnnModel(KgeModel):
         else:
             self._scorer = scorer
 
-        # necessary because of ConvE's bias hack 
         if scorer== kge.model.conve.ConvEScorer:
-            self._entity_embedder = decoder.get_s_embedder()
+            # adjust final layer of GNN to ConvE's embedding input size
+            scorer_dim = decoder.get_s_embedder().dim
             self._relation_embedder = decoder.get_p_embedder()
+            num_encoder_layers = config.get(self.configuration_key + ".encoder.num_layers")
+            last_layer_out_dim_key = self.configuration_key + ".encoder." + str(num_encoder_layers) + "_out_dim"
+            config.set(last_layer_out_dim_key, scorer_dim)
 
         self._encoder: KgeRgnnEncoder
         self._encoder = KgeRgnnEncoder.create(
