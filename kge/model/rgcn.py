@@ -18,7 +18,12 @@ class RGCN(KgeRgnnModel):
     ):
         self._init_configuration(config, configuration_key)
 
-        decoder_model = importlib.import_module("kge.model." + self.get_option("decoder.model"))
+        # set the correct scorer
+        if self.get_option("decoder.model") == "reciprocal_relations_model":
+            decoder_model = importlib.import_module(
+                "kge.model." + self.get_option("decoder.reciprocal_relations_model.base_model.type"))  
+        else:  
+            decoder_model = importlib.import_module("kge.model." + self.get_option("decoder.model"))
         scorer = getattr(decoder_model, self.get_option("decoder.scorer"))
 
         super().__init__(
