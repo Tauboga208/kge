@@ -393,10 +393,10 @@ def index_edge_index(dataset, inverse=True):
 
         for sub, _, obj in dataset._triples["train"]:
             edge_index.append((sub.item(), obj.item()))
-        # Adding inverse edges
+        # Add inverse edges
         if inverse:
-            for sub, _, obj in dataset._triples["train"]:
-                edge_index.append((obj.item(), sub.item()))
+            inverse_edges = [tuple(reversed(edge)) for edge in edge_index]
+            edge_index = edge_index + inverse_edges
 
         dataset._indexes["edge_index"] = torch.LongTensor(edge_index).t().to(device) 
 
@@ -411,10 +411,10 @@ def index_edge_type(dataset, inverse=True):
 
         for _, rel, _ in dataset._triples["train"]:
             edge_type.append(rel.item())
-        # Adding inverse edges
+        # Add inverse relation types to edges
         if inverse:
-            for _, rel, _ in dataset._triples["train"]:
-                edge_type.append(rel.item() + dataset._num_relations)
+            inverse_types = np.array(edge_type) + dataset._num_relations
+            edge_type = edge_type + list(inverse_types)
 
         dataset._indexes["edge_type"] = torch.LongTensor(edge_type).t().to(device) 
 
