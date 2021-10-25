@@ -350,98 +350,6 @@ class KgeEmbedder(KgeBase):
         """Returns all embeddings."""
         raise NotImplementedError
 
-class KgeRgnnEncoder(KgeBase):
-    r"""Base class for all Rgnn Encoders.
-    Runs a graph neural network over the knowledge graph to compute embeddings
-    with aggregated neighborhood information. 
-
-    """
-
-    def __init__(
-        self,
-        config: Config,
-        dataset: Dataset,
-        configuration_key: str,
-        init_for_load_only=False,
-    ):
-        super().__init__(config, dataset, configuration_key)
-
-        #: location of the configuration options of this encoder
-        self.encoder_type: str = self.get_option("type")
-
-        # verify all custom options by trying to set them in a copy of this
-        # configuration (quick and dirty, but works)
-        try:
-            custom_options = Config.flatten(config.get(self.configuration_key))
-        except KeyError:
-            # there are no custom options
-            custom_options = {}
-        if "type" in custom_options:
-            del custom_options["type"]
-        dummy_config = self.config.clone()
-        for key, value in custom_options.items():
-            try:
-                dummy_config.set(self.encoder_type + "." + key, value)
-            except ValueError as ve:
-                raise ValueError(
-                    "key {}.{} invalid or of incorrect type, message was {}".format(
-                        self.configuration_key, key, ve
-                    )
-                )
-
-        # TODO: ist das nötig? --> gleichsetzen mit den von den embeddern
-        # self.dim: int = self.get_option("dim")
-
-    @staticmethod
-    def create(
-        config: Config,
-        dataset: Dataset,
-        configuration_key: str,
-        entity_embedder: KgeEmbedder,
-        relation_embedder: KgeEmbedder,
-        init_for_load_only=False, # TODO: wofür braucht man das?
-    ) -> "KgeRgnnEncoder":
-        """Factory method for rgnn encoder creation."""
-
-        try:
-            encoder_type = config.get_default(configuration_key + ".type")
-            class_name = config.get(encoder_type + ".class_name")
-        except:
-            raise Exception("Can't find {}.type in config".format(configuration_key))
-
-        try:
-            encoder = init_from(
-                class_name,
-                config.get("modules"),
-                config,
-                dataset,
-                configuration_key,
-                entity_embedder,
-                relation_embedder,
-                init_for_load_only=init_for_load_only,
-            )
-            return encoder
-        except:
-            config.log(
-                f"Failed to create Rgnn encoder {encoder_type} (class {class_name})."
-            )
-            raise
-
-    def prepare_job(self, job: "Job", **kwargs):
-        r"""Prepares the given job to work with this model.
-
-        If this model does not support the specified job type, this function may raise
-        an error.
-
-        This function commonly registers hooks specific to this model. For a list of
-        available hooks during training or evaluation, see :class:`TrainingJob` or
-        :class:`EvaluationJob`:, respectively.
-
-        """
-
-    def encode_spo(self, s, p, o):
-        raise NotImplementedError
-
 class KgeModel(KgeBase):
     r"""Generic KGE model for KBs with a fixed set of entities and relations.
 
@@ -486,7 +394,7 @@ class KgeModel(KgeBase):
                 config,
                 dataset,
                 self.configuration_key + ".relation_embedder",
-                num_relations * 2, # TODO: make optional for inverse! 
+                num_relations, 
                 init_for_load_only=init_for_load_only,
             )
 
@@ -540,30 +448,11 @@ class KgeModel(KgeBase):
                     self._relation_embedder.init_pretrained(
                         pretrained_relations_model.get_p_embedder()
                     )
-        # TODO create_rgnn_encoder here
-        # if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
-        #     self._encoder: KgeRgnnEncoder
-        #     self._encoder = KgeRgnnEncoder.create(
-        #         config,
-        #         dataset,
-        #         self.configuration_key + ".encoder",
-        #         self._entity_embedder,
-        #         self._relation_embedder,
-        #         init_for_load_only=init_for_load_only,
-        #     )
+
         #: Scorer
         self._scorer: RelationalScorer
         if type(scorer) == type:
             # scorer is type of the scorer to use; call its constructor 
-            # TODO:
-            # rausnehmen falls es klappt
-            #if self.config.exists(self.configuration_key + ".encoder"):
-                # use the configuration key of the scoring function when using
-                # a RGNN model
-                # self._scorer = scorer(
-                #     config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
-                # )
-            #else:
             self._scorer = scorer(
                 config=config, dataset=dataset, configuration_key=self.configuration_key
             )
@@ -770,9 +659,6 @@ class KgeModel(KgeBase):
     def get_p_embedder(self) -> KgeEmbedder:
         return self._relation_embedder
 
-    # def get_rgnn_encoder(self) -> KgeRgnnEncoder:
-    #     return self._encoder
-
     def get_scorer(self) -> RelationalScorer:
         return self._scorer
 
@@ -884,6 +770,102 @@ class KgeModel(KgeBase):
             po_scores = self._scorer.score_emb(all_subjects, p, o, combine="_po")
         return torch.cat((sp_scores, po_scores), dim=1)
 
+
+class KgeRgnnEncoder(KgeBase):
+    r"""Base class for all Rgnn Encoders.
+    Runs a graph neural network over the knowledge graph to compute embeddings
+    with aggregated neighborhood information. 
+
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        dataset: Dataset,
+        configuration_key: str,
+        init_for_load_only=False,
+    ):
+        super().__init__(config, dataset, configuration_key)
+
+        #: location of the configuration options of this encoder
+        self.encoder_type: str = self.get_option("type")
+
+        # verify all custom options by trying to set them in a copy of this
+        # configuration (quick and dirty, but works)
+        try:
+            custom_options = Config.flatten(config.get(self.configuration_key))
+        except KeyError:
+            # there are no custom options
+            custom_options = {}
+        if "type" in custom_options:
+            del custom_options["type"]
+        dummy_config = self.config.clone()
+        for key, value in custom_options.items():
+            try:
+                dummy_config.set(self.encoder_type + "." + key, value)
+            except ValueError as ve:
+                raise ValueError(
+                    "key {}.{} invalid or of incorrect type, message was {}".format(
+                        self.configuration_key, key, ve
+                    )
+                )
+
+        # TODO: ist das nötig? --> gleichsetzen mit den von den embeddern
+        # self.dim: int = self.get_option("dim")
+
+    @staticmethod
+    def create(
+        config: Config,
+        dataset: Dataset,
+        configuration_key: str,
+        entity_embedder: KgeEmbedder,
+        relation_embedder: KgeEmbedder,
+        reciprocal_scorer: False,
+        init_for_load_only=False, # TODO: wofür braucht man das?
+    ) -> "KgeRgnnEncoder":
+        """Factory method for rgnn encoder creation."""
+
+        try:
+            encoder_type = config.get_default(configuration_key + ".type")
+            class_name = config.get(encoder_type + ".class_name")
+        except:
+            raise Exception("Can't find {}.type in config".format(configuration_key))
+
+        try:
+            encoder = init_from(
+                class_name,
+                config.get("modules"),
+                config,
+                dataset,
+                configuration_key,
+                entity_embedder,
+                relation_embedder,
+                reciprocal_scorer, 
+                init_for_load_only=init_for_load_only,
+            )
+            return encoder
+        except:
+            config.log(
+                f"Failed to create Rgnn encoder {encoder_type} (class {class_name})."
+            )
+            raise
+
+    def prepare_job(self, job: "Job", **kwargs):
+        r"""Prepares the given job to work with this model.
+
+        If this model does not support the specified job type, this function may raise
+        an error.
+
+        This function commonly registers hooks specific to this model. For a list of
+        available hooks during training or evaluation, see :class:`TrainingJob` or
+        :class:`EvaluationJob`:, respectively.
+
+        """
+
+    def encode_spo(self, s, p, o):
+        raise NotImplementedError
+
+
 class KgeRgnnModel(KgeModel):
     r"""
     This class extends the KgeModel with a RGNN Encoder between the embedders and the scoring
@@ -895,32 +877,60 @@ class KgeRgnnModel(KgeModel):
         dataset: Dataset,
         scorer: Union[RelationalScorer, type],
         create_embedders=True,
-        # encoder=True, # muss anders gehen
         configuration_key=None,
         init_for_load_only=False,
     ):
-        super().__init__(config, dataset, scorer, 
+
+        
+        self.orig_num_relations = dataset.num_relations()
+
+        # add reciprocal relations in dataset to get the relation embeddings
+        # for the reciprocal relations
+        alt_dataset = dataset.shallow_copy()
+        alt_dataset._num_relations = self.orig_num_relations * 2
+        reciprocal_relation_ids = [
+            rel_id + "_reciprocal" for rel_id in alt_dataset.relation_ids()
+        ]
+        alt_dataset._meta["relation_ids"].extend(reciprocal_relation_ids)
+
+        super().__init__(config, alt_dataset, "scorer_mask", 
             create_embedders, configuration_key, init_for_load_only
         )
+  
+        decoder_model = config.get(self.configuration_key + ".decoder.model")
+        self.reciprocal_scorer = True if decoder_model == "reciprocal_relations_model" else False
 
-    # if self.config.exists(self.configuration_key + ".encoder"): # nachprüfen wie
-        self._encoder: KgeRgnnEncoder
-        self._encoder = KgeRgnnEncoder.create(
-            config,
-            dataset,
-            self.configuration_key + ".encoder",
-            self._entity_embedder,
-            self._relation_embedder,
+        # get decoder model
+        decoder = KgeModel.create(
+            config=config,
+            dataset=dataset, 
+            configuration_key=self.configuration_key + ".decoder",
             init_for_load_only=init_for_load_only,
         )
 
+        # TODO kann man den allgemein aus dem Encoder ziehen?
         self._scorer: RelationalScorer
         if type(scorer) == type:
-            self._scorer = scorer(
-                config=config, dataset=dataset, configuration_key=self.get_option("decoder.model")
-            )
+            self._scorer = decoder.get_scorer()
         else:
             self._scorer = scorer
+
+        # necessary because of ConvE's bias hack 
+        if scorer== kge.model.conve.ConvEScorer:
+            self._entity_embedder = decoder.get_s_embedder()
+            self._relation_embedder = decoder.get_p_embedder()
+
+        self._encoder: KgeRgnnEncoder
+        self._encoder = KgeRgnnEncoder.create(
+            config=config,
+            dataset=dataset,
+            configuration_key=self.configuration_key + ".encoder",
+            entity_embedder=self._entity_embedder,
+            relation_embedder=self._relation_embedder,
+            reciprocal_scorer=self.reciprocal_scorer,
+            init_for_load_only=init_for_load_only,
+        )
+
 
     def prepare_job(self, job: "Job", **kwargs):
         super().prepare_job(job, **kwargs)
@@ -943,6 +953,14 @@ class KgeRgnnModel(KgeModel):
         score of triple :math:`(s_i, p_i, o_i)`.
 
         """
+        if self.reciprocal_scorer:
+            if direction == "s":
+                p = p + self.orig_num_relations
+            elif direction != "o":
+                raise Exception(
+                "The reciprocal relations model cannot compute "
+                "undirected spo scores."
+            )
         s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
 
@@ -975,8 +993,14 @@ class KgeRgnnModel(KgeModel):
         If `s` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
-        return self._scorer.score_emb(s, p, o, combine="_po")
+        
+        if self.reciprocal_scorer:
+            p = p + self.orig_num_relations
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+            return self._scorer.score_emb(o, p, s, combine="sp_")
+        else:
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+            return self._scorer.score_emb(s, p, o, combine="_po")
 
     def score_so(self, s: Tensor, o: Tensor, p: Tensor = None) -> Tensor:
         r"""Compute scores for triples formed from a set of so-pairs and all (or a subset of the) relations.
@@ -991,6 +1015,8 @@ class KgeRgnnModel(KgeModel):
         If `p` is not None, it is a vector holding the indexes of the relations to score.
 
         """
+        if self.reciprocal_scorer:
+            raise Exception("The reciprocal relations model cannot score relations.")
         s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
         return self._scorer.score_emb(s, p, o, combine="s_o")
 
@@ -1014,6 +1040,11 @@ class KgeRgnnModel(KgeModel):
         holds the score for triple :math:`(e_{j-E}, p_i, o_i)`.
 
         """
+        if self.reciprocal_scorer:
+            # let the GNN output both original and inverse relation embeddings
+            batch_size = p.size(0)
+            p_inv = p + self.orig_num_relations
+            p = torch.cat([p, p_inv])
         if entity_subset is not None:
             s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
                 s, p, o, entity_subset
@@ -1022,7 +1053,14 @@ class KgeRgnnModel(KgeModel):
             s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
                 s, p, o, "all"
             )
-        sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
-        po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
+        if self.reciprocal_scorer:
+            # separate original and inverse direction relation embeddings
+            p_inv = p[batch_size:, :]
+            p = p[:batch_size, :]
+            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+            po_scores = self._scorer.score_emb(o, p_inv, all_entities, combine="sp_")
+        else:
+            sp_scores = self._scorer.score_emb(s, p, all_entities, combine="sp_")
+            po_scores = self._scorer.score_emb(all_entities, p, o, combine="_po")
         
         return torch.cat((sp_scores, po_scores), dim=1)
