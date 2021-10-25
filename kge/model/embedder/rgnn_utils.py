@@ -151,6 +151,14 @@ def schlichtkrull_uniform_(tensor, gain=1., shape=None):
     with torch.no_grad():
         return tensor.uniform_(-std, std)
 
+def wgcn_uniform_(tensor):
+    if tensor.dim()==1:
+        std = 1./sqrt(tensor.size(0))
+    if tensor.dim()==2:
+        std = 1./sqrt(tensor.size(1))
+    with torch.no_grad():
+        return tensor.uniform_(-std, std)
+
 # ---- Composition Functions for Message Passing ---- #
 
 def neighbor(h_i, h_j, h_r):
