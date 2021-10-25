@@ -1,0 +1,52 @@
+import: [rgnn_encoder, lookup_embedder, transe, conve, distmult]
+
+wgcn:
+  class_name: WGCN
+  entity_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_ 
+    dim: 100
+    # regularize: ''
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    # regularize: ''
+    dim: 100
+    +++: +++
+  encoder:
+    type: rgnn_encoder
+    layer_type: "weighted_gcn"
+    edge_dropout: 0.0
+    self_edge_dropout: 0.0
+    activation: tanh
+    emb_entity_dropout: 0.25  # used on the entity output of the rgnn layer
+    bias: True 
+    num_layers: 2
+    rel_transformation: self
+    1_out_dim: 200
+      #2_in_dim: 200
+    2_out_dim: 100
+    weight_init: wgcn_uniform_
+    bias_init: wgcn_uniform_
+    +++: +++
+  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
+           # scoring functions. The original CompGCN model supports TransE,
+           # ConvE and Distmult but in principle any other function can be imported
+           # or passed
+    model: reciprocal_relations_model
+    type: reciprocal_relations_model
+    base_model.type: conve
+      #type: kge_model
+    reciprocal_relations_model.base_model.type: conve
+    base_model:
+      round_dim: True
+      entity_embedder: # see as output size of Rgnn
+        dim: 100            
+        +++: +++
+      relation_embedder:
+        dim: 100            
+        +++: +++
+    scorer: ConvEScorer 
+    
+    

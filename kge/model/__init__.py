@@ -20,6 +20,7 @@ from kge.model.cp import CP
 from kge.model.simple import SimplE
 from kge.model.compgcn import CompGCN
 from kge.model.rgcn import RGCN
+from kge.model.wgcn import WGCN
 
 # meta models
 from kge.model.reciprocal_relations_model import ReciprocalRelationsModel
