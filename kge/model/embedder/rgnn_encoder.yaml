@@ -4,9 +4,10 @@ rgnn_encoder:
 
   # arguments for all layers:
   num_layers: 2
-  1_out_dim: 200
-  2_in_dim: 200
-  2_out_dim: 200
+  1_out_dim: -1
+  2_out_dim: -1
+  3_out_dim: -1
+  4_out_dim: -1
 
   activation: relu
   weight_init: xavier_normal_

@@ -651,6 +651,86 @@ class TorchRgcnLayer(torch.nn.Module):
 
         return sums # .view(k)
 
+class WeightedGCNLayer(torch.nn.Module):
+    r""" Layer closely adapted from the WGCN implementation 
+    of https://arxiv.org/abs/1811.04441. Reduces adjacency dimension RxNxN to NxN
+    by assigning each relation a weight and combining into one (sparse) adjacency matrix.
+
+    """
+    def __init__(
+        self,
+        config, 
+        dataset,
+        edge_index,
+        edge_type,
+        in_dim,
+        out_dim,
+        weight_init,
+        bias_,
+        bias_init,
+        self_edge_dropout):
+        super(WeightedGCNLayer, self).__init__()
+
+        self.device	= config.get('job.device') 
+        self.edge_index = edge_index
+        self.edge_type =  edge_type
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.num_entities = dataset.num_entities()
+        self.num_relations = dataset.num_relations() * 2 + 1
+        self.self_edge_dropout = self_edge_dropout    
+        self.weight = self._get_and_init_w_param((in_dim, out_dim), weight_init) 
+        self.alpha = torch.nn.Embedding(self.num_relations + 1, 1, padding_idx=0)
+        if bias_:
+            self.bias = self._get_and_init_bias_param(bias_init)
+        self.bn	= torch.nn.BatchNorm1d(self.out_dim).to(self.device) 
+
+    def forward(self, x, r):
+        edge_index, edge_type = self._add_self_edge(self.self_edge_dropout)
+        alpha_r = self.alpha(edge_type).t()[0]
+        adj = torch.sparse_coo_tensor(
+            edge_index, alpha_r, torch.Size((self.num_entities, self.num_entities)),
+            requires_grad=True)
+        adj = adj + adj.transpose(0, 1)
+        XW = torch.mm(x, self.weight)
+        out = torch.sparse.mm(adj, XW)
+        if self.bias is not None:
+            out = torch.add(out, self.bias)     
+        out = self.bn(out)
+        return out, r
+
+    def _get_and_init_w_param(self, shape, weight_init):
+        param = torch.nn.Parameter(torch.empty(*shape, device=self.device))
+        param = weight_init(param)
+        return param
+
+    def _get_and_init_bias_param(self, bias_init):
+        self.register_parameter(
+            "bias", torch.nn.Parameter(torch.zeros(self.out_dim).to(self.device))
+        ) 
+        return bias_init(self.bias) 
+
+    def _add_self_edge(self, self_edge_dropout):
+        # apply only self-edges on nodes that are in the edge-dropped graph
+        #left_nodes = torch.cat([edge_index[0, :], edge_index[1, :]]).unique()
+
+        self_node_index = torch.stack(
+            [torch.arange(self.num_entities), torch.arange(self.num_entities)]).to(self.device)
+        self_rel_index = torch.full(
+            (self_node_index.size(1),), self.num_relations-1, dtype=torch.long).to(self.device)
+            # self-edge dropout
+        self_edge_mask = torch.rand(self.num_entities) > self_edge_dropout
+        self_node_index_masked = self_node_index[:, self_edge_mask]
+        self_rel_index_masked = self_rel_index[self_edge_mask]
+
+        self.num_orig_edges = self.edge_index.size(1)//2
+        self.num_self_edges = self_rel_index_masked.size(0)
+            
+        edge_index_plus = torch.cat([self.edge_index, self_node_index_masked], dim=1)            
+        edge_type_plus = torch.cat([self.edge_type, self_rel_index_masked], dim=0)
+        
+        return edge_index_plus, edge_type_plus
+
 
 
 class RgnnModel(KgeBase):
@@ -681,7 +761,8 @@ class RgnnModel(KgeBase):
         # activation function
         act_key = self.get_option("activation")
         try:
-            self.activation = getattr(torch.nn.functional, act_key)
+            # self.activation = getattr(torch.nn.functional, act_key)
+            self.activation = getattr(torch, act_key)
         except Exception as e:
             raise ValueError(
                 f"invalid activation function: {act_key}") from e
@@ -690,23 +771,9 @@ class RgnnModel(KgeBase):
         bias = self.get_option("bias")
         weight_decomposition = self.get_option("weight_decomposition")
         num_blocks_or_bases = self.get_option("num_blocks_or_bases")
-        weight_key = self.get_option("weight_init")
-        try:
-            # try to find it first from torch.nn.init
-            weight_init = getattr(torch.nn.init, weight_key)
-        except AttributeError:
-            # then check user defined init functions (can also be imported from rgnn_utils)
-            weight_init = globals()[weight_key]
-        except Exception as e:
-            raise ValueError(
-                f"Invalid weight initialisation: {weight_key}") from e
+        weight_init = self._find_init(self.get_option("weight_init"))
         if bias:
-            bias_key = self.get_option("bias_init")
-            try:
-                bias_init = getattr(torch.nn.init, bias_key)
-            except Exception as e:
-                raise ValueError(
-                    f"Invalid bias initialisation: {bias_key}" ) from e
+            bias_init = self._find_init(self.get_option("bias_init"))
         else:
             bias_init = None
         
@@ -750,8 +817,10 @@ class RgnnModel(KgeBase):
                 # try to read from config, if not there take same dim as in_dim
                 out_dim_key = str(i + 1) + "_out_dim"
                 self.out_dim = self.get_option(out_dim_key)
+                if self.out_dim < 0:
+                    self.out_dim = self.in_dim
             except KeyError:
-                self.out_dim = in_dim
+                self.out_dim = self.in_dim
             
             # in case of relation basis decomposition only apply it in the
             # first layer
@@ -799,6 +868,20 @@ class RgnnModel(KgeBase):
                         vertical_stacking
                     )
                 )
+            elif self.layer_type == "weighted_gcn":
+                self.gnn_layers.append(
+                    WeightedGCNLayer(
+                        self.config, 
+                        self.dataset, 
+                        edge_index_dropped, 
+                        edge_type_dropped, 
+                        self.in_dim, 
+                        self.out_dim, 
+                        weight_init, 
+                        bias, 
+                        bias_init, 
+                        self_edge_dropout)
+                )
             else:
                 raise NotImplementedError(
                     f"{self.layer_type} not supported. Use message_passing or torch_rgcn")
@@ -808,11 +891,26 @@ class RgnnModel(KgeBase):
             if self.layer_type == "torch_rgcn":
                 x = self.activation(x)
             x, r = self.gnn_layers[i](x, r)
-            if self.layer_type == "message_passing":
+            if self.layer_type in ["message_passing", "weighted_gcn"]:
                 x = self.activation(x)
             x = self.emb_entity_dropout(x)
 
-        return x, r[:self.dataset.num_relations()] # TODO: die ganzen falls reciprocal?
+        # return x, r[:self.dataset.num_relations()] # TODO: die ganzen falls
+        # reciprocal?
+        return x, r
+        
+    def _find_init(self, init_key):
+        try:
+            # try to find it first from torch.nn.init
+            init = getattr(torch.nn.init, init_key)
+            return init
+        except AttributeError:
+            # then check user defined init functions (can also be imported from rgnn_utils)
+            init = globals()[init_key]
+            return init
+        except Exception as e:
+            raise ValueError(
+                f"Invalid initialisation: {init_key}") from e
 
 
 class RgnnEncoder(KgeRgnnEncoder):
@@ -821,16 +919,18 @@ class RgnnEncoder(KgeRgnnEncoder):
 
     def __init__(
         self, config, dataset, configuration_key, entity_embedder, 
-        relation_embedder, init_for_load_only=False
+        relation_embedder, reciprocal_scorer, init_for_load_only=False
     ):
         super().__init__(
             config, dataset, configuration_key, init_for_load_only=init_for_load_only
         )
         self.device = self.config.get("job.device")
+        self.dataset = dataset
 
         # set the embedders for the original node and relation embeddings
         self.entity_embedder = entity_embedder
         self.relation_embedder = relation_embedder
+        self.reciprocal_scorer = reciprocal_scorer
 
         # get the dimensions of the entity embedding to use for the first layer
         dim = self.entity_embedder.dim
@@ -858,18 +958,13 @@ class RgnnEncoder(KgeRgnnEncoder):
             return s, p, o
 
     def _run_rgnn(self):
-        # specify if model runs for training or evaluation
-        job_type = self.config.get("job.type")
-        if job_type == "train":
-            self.rgnn.train()
-        else:
-            self.rgnn.eval()
-
         # compute convolution
         ent_emb, rel_emb = self.rgnn.forward(
             self.entity_embedder.embed_all(), 
             self.relation_embedder.embed_all()
         )
+        if not self.reciprocal_scorer:
+            rel_emb = rel_emb[:self.dataset.num_relations()]
 
         return ent_emb, rel_emb
 
