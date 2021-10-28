@@ -916,12 +916,14 @@ class KgeRgnnModel(KgeModel):
             self._scorer = scorer
 
         if scorer== kge.model.conve.ConvEScorer:
-            # adjust final layer of GNN to ConvE's embedding input size
+            # adjust final layer embedding dims of GNN to ConvE's embedding input size
             scorer_dim = decoder.get_s_embedder().dim
-            self._relation_embedder = decoder.get_p_embedder()
             num_encoder_layers = config.get(self.configuration_key + ".encoder.num_layers")
             last_layer_out_dim_key = self.configuration_key + ".encoder." + str(num_encoder_layers) + "_out_dim"
             config.set(last_layer_out_dim_key, scorer_dim)
+            rel_transform = config.get(self.configuration_key + ".encoder.rel_transformation")
+            if rel_transform == "self":
+                self._relation_embedder = decoder.get_p_embedder()
 
         self._encoder: KgeRgnnEncoder
         self._encoder = KgeRgnnEncoder.create(
