@@ -28,9 +28,12 @@ rgnn_encoder:
   message_passing_args:
     propagation: direction  # per_relation, single, single_with_self_edge_weight
     composition: sub # neighbor, mult, ccorr
+    message_weight: False
     edge_norm: True 
     emb_propagation_dropout: 0.0 # used after the propagation function in the
                                  # message passing layer
+    attention: False
+    num_heads: 1
   torch_rgcn_args:
     vertical_stacking: False
    

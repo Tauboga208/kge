@@ -16,28 +16,50 @@ compgcn:
   encoder:
     type: rgnn_encoder
     # CompGCN specific RGNN parameters:
-    edge_norm: True
+    layer_type: message_passing 
+    message_passing_args:
+      edge_norm: True
+      emb_propagation_dropout: 0.0  
+      propagation: direction # use a different weight matrix for in-direction,
+                              # out-direction and the self-loop
+      composition: sub  # sub, mult and ccorr in original implementation
+      message_weight: False
+      attention: False
     activation: tanh
-    emb_propagation_dropout: 0.1  # used after the propagation function in the rgnn layer
-                       # (except for self-edges )
+    rel_transformation: linear
+    num_layers: 2
     emb_entity_dropout: 0.1  # used on the entity output of the rgnn layer
     self_edge_dropout: 0.0
     edge_dropout: 0.0
     bias: False 
-    num_layers: 2
-    propagation: direction  # use a different weight matrix for in-direction,
-                            # out-direction and the self-loop
-    composition: sub
+    weight_decomposition: None # relation_basis 
     num_blocks_or_bases: -1
-    # num_basis: -1
     +++: +++
+
   decoder: # specify which scorer to use as a decoder in the RGNN, one of the
            # scoring functions. The original CompGCN model supports TransE,
            # and Distmult but in principle any other function can be imported
            # or passed
-    model: transe
-    # transe:
-    #   l_norm: 1.01
-    #   +++: +++
-    scorer: TransEScorer 
+    model: distmult
+    type: distmult
+    scorer: DistMultScorer 
+
+  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
+           # scoring functions. The original CompGCN model supports TransE,
+           # ConvE and Distmult but in principle any other function can be imported
+           # or passed
+    model: reciprocal_relations_model
+    type: reciprocal_relations_model
+    base_model.type: conve
+      #type: kge_model
+    reciprocal_relations_model.base_model.type: conve
+    base_model:
+      round_dim: True
+      entity_embedder: # see as output size of Rgnn
+        dim: 200            
+        +++: +++
+      relation_embedder:
+        dim: 200            
+        +++: +++
+    scorer: ConvEScorer 
     
