@@ -21,6 +21,7 @@ from kge.model.simple import SimplE
 from kge.model.compgcn import CompGCN
 from kge.model.rgcn import RGCN
 from kge.model.wgcn import WGCN
+from kge.model.ragat import RAGAT
 
 # meta models
 from kge.model.reciprocal_relations_model import ReciprocalRelationsModel

@@ -1,0 +1,73 @@
+import: [rgnn_encoder, lookup_embedder, transe, conve, distmult]
+
+ragat:
+  class_name: RAGAT
+  entity_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_ 
+    regularize: ''
+    dim: 100
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 100
+    +++: +++
+  encoder:
+    type: rgnn_encoder
+    num_layers: 1
+
+    activation: relu
+    weight_init: xavier_normal_
+    bias: False 
+    bias_init: zeros_ # ones_, uniform_, normal_ ... (from torch.nn.init)
+    
+    weight_decomposition: None # block, basis, relation_basis
+    num_blocks_or_bases: -1
+
+    edge_dropout: 0.0 # drop edges from the graphs
+    self_edge_dropout: 0.0 # drop self-edges from the graph
+    emb_entity_dropout: 0.3  # used on the entity embedding output of the rgnn layer
+    
+    rel_transformation: linear # self, linear, convoluted
+    
+    layer_type: message_passing # other options: torch_rgcn
+    # Specific Arguments for the MessagePassingLayer
+    message_passing_args:
+      propagation: direction  # per_relation, single, single_with_self_edge_weight
+      composition: cross_weighted # neighbor, mult, ccorr, cross
+      edge_norm: False 
+      emb_propagation_dropout: 0.4 # used after the propagation function in the
+                                  # message passing layer
+      attention: True
+      num_heads: 2
+      message_weight: True
+    +++: +++
+  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
+           # scoring functions. The original CompGCN model supports TransE,
+           # and Distmult but in principle any other function can be imported
+           # or passed
+    model: distmult
+    type: distmult
+    scorer: DistMultScorer 
+  # decoder: # specify which scorer to use as a decoder in the RGNN, one of the
+  #          # scoring functions. The original CompGCN model supports TransE,
+  #          # ConvE and Distmult but in principle any other function can be imported
+  #          # or passed
+  #   model: reciprocal_relations_model
+  #   type: reciprocal_relations_model
+  #   base_model.type: conve
+  #     #type: kge_model
+  #   reciprocal_relations_model.base_model.type: conve
+  #   base_model:
+  #     round_dim: True
+  #     entity_embedder: # see as output size of Rgnn
+  #       dim: 200            
+  #       +++: +++
+  #     relation_embedder:
+  #       dim: 200            
+  #       +++: +++
+  #   scorer: ConvEScorer 
+    
+    

@@ -161,18 +161,91 @@ def wgcn_uniform_(tensor):
 
 # ---- Composition Functions for Message Passing ---- #
 
-def neighbor(h_i, h_j, h_r):
+def neighbor(h_i, h_j, h_r, message_weight=None):
     return h_j
 
-def sub(h_i, h_j, h_r):
+def sub(h_i, h_j, h_r, message_weight=None):
     return h_j-h_r   
 
-def mult(h_i, h_j, h_r):
+def sub_weighted(h_i, h_j, h_r, message_weight):
+    return h_j*rel_weight-h_r  
+
+def mult(h_i, h_j, h_r, message_weight=None):
     return h_j*h_r   
 
-def ccorr(h_i, h_j, h_r):
+def mult_weighted(h_i, h_j, h_r, message_weight):
+    return h_j*h_r*rel_weight   
+
+def ccorr(h_i, h_j, h_r, message_weight=None):
     return torch.irfft(
         com_mult(conj(torch.rfft(h_j, 1)), torch.rfft(h_r, 1)),
         1, 
         signal_sizes=(h_r.shape[-1],)
     )  
+
+def ccorr_weighted(h_i, h_j, h_r, message_weight):
+    weighted_h_j = h_j * rel_weight
+    return torch.irfft(
+        com_mult(conj(torch.rfft(weighted_h_j, 1)), torch.rfft(h_r, 1)),
+        1, 
+        signal_sizes=(h_r.shape[-1],)
+    )  
+
+def cross(h_i, h_j, h_r, message_weight=None):
+    return h_j*h_r+h_j
+
+def cross_weighted(h_i, h_j, h_r, message_weight=None):
+    return h_j*h_r*message_weight + h_j*message_weight
+
+
+
+
+# ---- Sparse Grouping of Values from Edges to Entites ---- #
+
+import torch
+
+
+class Edge2NodeFunction(torch.autograd.Function):
+    """Sparse aggregation of values from edges to either messaging or receiving
+    nodes.
+    Adopted from the RAGAT implementation (original name: SpecialSpmmFunctionFinal)
+    https://github.com/liuxiyang641/RAGAT."""
+
+    @staticmethod
+    def forward(ctx, edge, edge_w, size1, size2, out_features, dim):
+        # assert indices.requires_grad == False
+        # assert not torch.isnan(edge).any()
+        # assert not torch.isnan(edge_w).any()
+
+        # create tensor with edge indices and scores as values
+        a = torch.sparse_coo_tensor(
+            edge, edge_w, torch.Size([size1, size2, out_features]))
+        # sum values over the index values
+        b = torch.sparse.sum(a, dim=dim)
+        ctx.size1 = b.shape[0]
+        ctx.outfeat = b.shape[1]
+        ctx.size2 = size2
+        if dim == 0:
+            ctx.indices = a._indices()[1, :]
+        else:
+            ctx.indices = a._indices()[0, :]
+        return b.to_dense()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_values = None
+        if ctx.needs_input_grad[1]:
+            edge_sources = ctx.indices
+            if torch.cuda.is_available():
+                edge_sources = edge_sources.cuda()
+
+            grad_values = grad_output[edge_sources]
+            # grad_values = grad_values.view(ctx.E, ctx.outfeat)
+            # print("Grad Outputs-> ", grad_output)
+            # print("Grad values-> ", grad_values)
+        return None, grad_values, None, None, None, None
+
+
+class Edge2Node(torch.nn.Module):
+    def forward(self, edge, edge_w, size1, size2, out_features, dim=1):
+        return Edge2NodeFunction.apply(edge, edge_w, size1, size2, out_features, dim)
