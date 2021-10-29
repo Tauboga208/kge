@@ -400,6 +400,12 @@ negative_sampling:
   # tries to do just this heuristically.
   implementation: auto
 
+  # Graph Sampling: sample a subgraph of [graph_sampling_size] positives every epoch.
+  # 'uniform' gives each random probability, 'edge_neighbourhood' iteratively chooses
+  # entities already present in sampled edges 
+  graph_sampling: None # uniform, edge_neighbourhood
+  graph_sampling_size: -1 # number of edges in sampled graph
+
 ## VALIDATION AND EVALUATION ###################################################
 
 # Options used for all evaluation jobs (job.type=="eval"). Also used during

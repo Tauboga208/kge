@@ -4,6 +4,7 @@ import torch.utils.data
 
 from kge.job import Job
 from kge.job.train import TrainingJob, _generate_worker_init_fn
+from kge.job.util import sample_uniform, sample_edge_neighbourhood, calculate_edge_index, calculate_edge_type
 from kge.util import KgeSampler
 from kge.model.transe import TransEScorer
 
@@ -49,10 +50,23 @@ class TrainingJobNegativeSampling(TrainingJob):
             "'{}' scoring function ...".format(self._implementation)
         )
 
+        # select graph sampling method
+        self.graph_sampling = self.config.check(
+            "negative_sampling.graph_sampling", ["uniform", "edge_neighbourhood", "None"],
+        )
+        if self.graph_sampling == "None":
+            self.graph_sampling = None
+        else:
+            self.graph_sampling_size = self.config.get("negative_sampling.graph_sampling_size")
+            if self.graph_sampling == "uniform":
+                self.sampling_fun = sample_uniform
+            else: # edge_neighbourhood
+                self.sampling_fun = sample_edge_neighbourhood
+
+        self._set_num_examples()
         # construct dataloader
-        self.num_examples = self.dataset.split(self.train_split).size(0)
         self.loader = torch.utils.data.DataLoader(
-            range(self.num_examples),
+            range(self.num_examples), 
             collate_fn=self._get_collate_fun(),
             shuffle=True,
             batch_size=self.batch_size,
@@ -60,6 +74,13 @@ class TrainingJobNegativeSampling(TrainingJob):
             worker_init_fn=_generate_worker_init_fn(self.config),
             pin_memory=self.config.get("train.pin_memory"),
         )
+
+    def _set_num_examples(self):
+        # adjust number of examples in case of sampling
+        if self.graph_sampling:
+            self.num_examples = self.graph_sampling_size
+        else:
+            self.num_examples = self.dataset.split(self.train_split).size(0)
 
     def _get_collate_fun(self):
         # create the collate function
@@ -70,11 +91,27 @@ class TrainingJobNegativeSampling(TrainingJob):
             - negative_samples (list of tensors of shape [n,num_samples]; 3 elements
               in order S,P,O)
             """
+            train_split = self.dataset.split(self.train_split)
+            if self.graph_sampling:
+                sampled_triples = self.sampling_fun(
+                    train_split, 
+                    self.graph_sampling_size,
+                    self.dataset.num_entities())
+                # adjust edge data for message passing
+                device = self.config.get("job.device")
+                self.dataset._indexes["edge_index"] = calculate_edge_index(sampled_triples, device)
+                self.dataset._indexes["edge_type"] = calculate_edge_type(
+                    sampled_triples, device, self.dataset.num_relations())
 
-            triples = self.dataset.split(self.train_split)[batch, :].long()
+                triples = sampled_triples[batch, :].long()
+                # adjust edge index and edge type
+
+            else:
+                triples = train_split[batch, :].long()
             # labels = torch.zeros((len(batch), self._sampler.num_negatives_total + 1))
             # labels[:, 0] = 1
             # labels = labels.view(-1)
+            
 
             negative_samples = list()
             for slot in [S, P, O]:
