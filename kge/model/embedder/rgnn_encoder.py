@@ -43,6 +43,8 @@ class MessagePassing(torch.nn.Module):
                     message_weight = torch.index_select(
                         self.weights["w_message_weight_{}".format(head_name)] , 0, edge_type) 
                     message_args.append(message_weight) 
+                else:
+                    message_args.append(None)
             else:
                 message_args.append(kwargs[arg])	
 
@@ -59,8 +61,6 @@ class MessagePassing(torch.nn.Module):
 
     def message(self, h_i, h_j, h_r, propagation_type, edge_norm=None, 
         mode="", head=1, message_weight=None):
-        
-        # TODO attention
         if propagation_type == "per_relation_basis":
             # calculate the basis decomposition weight a_br*v_b
             weight = self._calculate_basis_weights(mode)
@@ -517,10 +517,9 @@ class TorchRgcnLayer(torch.nn.Module):
         self,
         config, 
         dataset,
-        edge_index,
-        edge_type,
         in_dim,
         out_dim,
+        edge_dropout,
         weight_init,
         bias_,
         bias_init,
@@ -533,15 +532,16 @@ class TorchRgcnLayer(torch.nn.Module):
         self.device	= config.get("job.device") 
 
         # compute necessary data statistics
+        self.dataset = dataset
         self.num_entities = dataset.num_entities()
         self.orig_num_relations = dataset.num_relations()
         self.num_relations = dataset.num_relations() * 2 + 1# with inverse edges TODO
 
         # set the graph indices and layer dimensions
-        self.edge_index = edge_index
-        self.edge_type =  edge_type
+        self.graph_sampling = config.get("negative_sampling.graph_sampling")
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.edge_dropout = edge_dropout
 
         # set parameter configurations and initialise parameters 
         self.weight_init = weight_init
@@ -568,11 +568,25 @@ class TorchRgcnLayer(torch.nn.Module):
         elif self.weight_decomposition == "block":
             pass # the block weights are set differently depending on the stacking of A
         
+        # check for graph sampling
+        if self.graph_sampling in ["edge_neighbourhood", "uniform"]:
+            edge_index=self.dataset._indexes["edge_index"]
+            edge_type=self.dataset._indexes["edge_type"]
+
+        # apply edge dropout on direct and corresponding inverse edges
+        # happens here because of the potential graph sampling
+        num_edges_wo_loops = edge_index.size(1)
+        edge_mask_one_direction = torch.rand(num_edges_wo_loops//2) > self.edge_dropout
+        # This way corresponding reciprocal edges get dropped as well
+        edge_mask = torch.cat([edge_mask_one_direction, edge_mask_one_direction])
+        edge_index_dropped = edge_index[:, edge_mask]
+        edge_type_dropped = edge_type[edge_mask]
+
         # add self edge (with applied dropout) to edge_index and edge_type
-        edge_index, edge_type = self._add_self_edge(self.self_edge_dropout)
+        edge_index_plus, edge_type_plus = self._add_self_edge(self.self_edge_dropout, edge_index_dropped, edge_type_dropped)
 
         # compute stacked indices (either vertical oder horizontal)
-        adj_indices, adj_size = self._stack_adj_matrices(edge_index, edge_type)
+        adj_indices, adj_size = self._stack_adj_matrices(edge_index_plus, edge_type_plus)
         num_edges = adj_indices.size(0)
         vals = torch.ones(num_edges, dtype=torch.float, device=self.device)
 
@@ -614,6 +628,13 @@ class TorchRgcnLayer(torch.nn.Module):
                 out = torch.mm(adj, XW.view(self.num_relations * self.num_entities, self.out_dim))
         if self.bias is not None:
             out = torch.add(out, self.bias)
+        
+                # Checkpoint 5
+        # print('min', torch.min(out))
+        # print('max', torch.max(out))
+        # print('mean', torch.mean(out))
+        # print('std', torch.std(out))
+        # print('size', out.size())
                 
         return out, r
 
@@ -646,10 +667,22 @@ class TorchRgcnLayer(torch.nn.Module):
                 self.block_row_dim, self.block_col_dim), device=self.device))
             self.blocks = schlichtkrull_normal_(
                 blocks, shape=[self.orig_num_relations, self.block_row_dim])
+            # checkpoint 3: block weights
+            # print("min", torch.min(self.blocks))
+            # print("max", torch.max(self.blocks))
+            # print("mean", torch.mean(self.blocks))
+            # print("std", torch.std(self.blocks))
+            # print("size", self.blocks.size())
             block_self = torch.nn.Parameter(
                 torch.empty((self.in_dim, self.out_dim), device=self.device))
             self.block_self = schlichtkrull_normal_(
                 block_self, shape=[self.orig_num_relations, self.block_row_dim])
+            # checkpoint 3: block weights
+            # print("min", torch.min(self.block_self))
+            # print("max", torch.max(self.block_self))
+            # print("mean", torch.mean(self.block_self))
+            # print("std", torch.std(self.block_self))
+            # print("size", self.block_self.size())
 
     def _calculate_block_weights(self, blocks):
         dim = blocks.dim()
@@ -670,7 +703,7 @@ class TorchRgcnLayer(torch.nn.Module):
             torch.Size([1] * n_dim_to_prepend) + v.shape + torch.Size([1] * n_dim_to_append)
         )
 
-    def _add_self_edge(self, self_edge_dropout):
+    def _add_self_edge(self, self_edge_dropout, edge_index, edge_type):
         # apply only self-edges on nodes that are in the edge-dropped graph
         #left_nodes = torch.cat([edge_index[0, :], edge_index[1, :]]).unique()
 
@@ -683,11 +716,11 @@ class TorchRgcnLayer(torch.nn.Module):
         self_node_index_masked = self_node_index[:, self_edge_mask]
         self_rel_index_masked = self_rel_index[self_edge_mask]
 
-        self.num_orig_edges = self.edge_index.size(1)//2
+        self.num_orig_edges = edge_index.size(1)//2
         self.num_self_edges = self_rel_index_masked.size(0)
             
-        edge_index_plus = torch.cat([self.edge_index, self_node_index_masked], dim=1)            
-        edge_type_plus = torch.cat([self.edge_type, self_rel_index_masked], dim=0)
+        edge_index_plus = torch.cat([edge_index, self_node_index_masked], dim=1)            
+        edge_type_plus = torch.cat([edge_type, self_rel_index_masked], dim=0)
         
         return edge_index_plus, edge_type_plus
 
@@ -791,7 +824,7 @@ class WeightedGCNLayer(torch.nn.Module):
         adj = torch.sparse_coo_tensor(
             edge_index, alpha_r, torch.Size((self.num_entities, self.num_entities)),
             requires_grad=True)
-        adj = adj + adj.transpose(0, 1)
+        adj = adj + adj.transpose(0, 1) # TODO: checken ob adj schon sym
         XW = torch.mm(x, self.weight)
         out = torch.sparse.mm(adj, XW)
         if self.bias is not None:
@@ -949,10 +982,9 @@ class Rgnn(KgeBase):
                     TorchRgcnLayer(
                         self.config, 
                         self.dataset,
-                        edge_index_dropped,
-                        edge_type_dropped,
                         self.in_dim,
                         self.out_dim,
+                        edge_dropout,
                         weight_init,
                         bias,
                         bias_init,
@@ -985,6 +1017,12 @@ class Rgnn(KgeBase):
             if self.layer_type == "torch_rgcn":
                 # rgcn uses activation before the layer
                 x = self.activation(x)
+                # checkpoint 2: node embeddings before gcn layer
+                # print("min", torch.min(x))
+                # print("max", torch.max(x))
+                # print("mean", torch.mean(x))
+                # print("std", torch.std(x))
+                # print("size", x.size())
             x, r = self.gnn_layers[i](x, r)
             if self.layer_type in ["message_passing", "weighted_gcn"]:
                 x = self.activation(x)
@@ -1073,6 +1111,13 @@ class RgnnEncoder(KgeRgnnEncoder):
 
     def _run_rgnn(self):
         # compute convolution
+        # checkpoint 1: node embeddings
+        # print("min", torch.min(self.entity_embedder.embed_all()))
+        # print("max", torch.max(self.entity_embedder.embed_all()))
+        # print("mean", torch.mean(self.entity_embedder.embed_all()))
+        # print("std", torch.std(self.entity_embedder.embed_all()))
+        # print("size", self.entity_embedder.embed_all().size())
+
         ent_emb, rel_emb = self.rgnn.forward(
             self.entity_embedder.embed_all(), 
             self.relation_embedder.embed_all()
