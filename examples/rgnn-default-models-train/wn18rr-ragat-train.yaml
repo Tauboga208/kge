@@ -1,7 +1,11 @@
-import: [rgnn_encoder, lookup_embedder, transe, conve, distmult]
+# Get all settings similar to default settings in SACN
+import: [rgnn_encoder, lookup_embedder]
+
+job.type: train
+dataset.name: wnrr
+model: ragat
 
 ragat:
-  class_name: RAGAT
   entity_embedder:
     type: lookup_embedder
     initialize: xavier_normal_ 
@@ -17,15 +21,12 @@ ragat:
   encoder:
     type: rgnn_encoder
     num_layers: 1
-
     activation: relu
     weight_init: xavier_normal_
     bias: False 
     bias_init: zeros_ # ones_, uniform_, normal_ ... (from torch.nn.init)
-    
     weight_decomposition: None # block, basis, relation_basis
     num_blocks_or_bases: -1
-
     edge_dropout: 0.0 # drop edges from the graphs
     self_edge_dropout: 0.0 # drop self-edges from the graph
     emb_entity_dropout: 0.3  # used on the entity embedding output of the rgnn layer
@@ -41,14 +42,10 @@ ragat:
       emb_propagation_dropout: 0.4 # used after the propagation function in the
                                   # message passing layer
       attention: True
-      num_heads: 2
+      num_heads: 1
       message_weight: True
     +++: +++
-
-  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
-           # scoring functions. The original CompGCN model supports TransE,
-           # ConvE and Distmult but in principle any other function can be imported
-           # or passed
+  decoder: # here normal ConvE, RAGAT uses InteractE
     model: reciprocal_relations_model
     type: reciprocal_relations_model
     base_model.type: conve
@@ -63,5 +60,29 @@ ragat:
         dim: 200            
         +++: +++
     scorer: ConvEScorer 
-    
-    
+
+train:
+  type: KvsAll
+  loss: bce
+  max_epochs: 1500
+  batch_size: 256
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      # betas: (0.9, 0.999)
+      eps: 1e-08
+      lr: 0.001
+      weight_decay: 0.0
+
+KvsAll:
+  label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 0 #especially for RGCN!
+
+
+random_seed:
+  numpy: 41504
+  torch: 41504

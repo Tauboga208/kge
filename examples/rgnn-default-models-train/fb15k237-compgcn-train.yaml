@@ -1,17 +1,23 @@
-import: [rgnn_encoder, lookup_embedder, transe, conve, distmult]
+# Get all settings similar to default settings in CompGCN
+import: [rgnn_encoder, lookup_embedder]
+
+job.type: train
+dataset.name: fb15k-237
+model: compgcn
 
 compgcn:
-  class_name: CompGCN
   # type: rgnn
   entity_embedder:
     type: lookup_embedder
     initialize: xavier_normal_
     regularize: ''
+    dim: 100
     +++: +++
   relation_embedder:
     type: lookup_embedder
     initialize: xavier_normal_
     regularize: ''
+    dim: 100
     +++: +++
   encoder:
     type: rgnn_encoder
@@ -19,31 +25,21 @@ compgcn:
     layer_type: message_passing 
     message_passing_args:
       edge_norm: True
-      emb_propagation_dropout: 0.0  
+      emb_propagation_dropout: 0.3  
       propagation: direction # use a different weight matrix for in-direction,
                               # out-direction and the self-loop
-      composition: sub  # sub, mult and ccorr in original implementation
+      composition: ccorr  # sub, mult and ccorr in original implementation
       message_weight: False
       attention: False
     activation: tanh
     rel_transformation: linear
-    num_layers: 2
+    num_layers: 1
     emb_entity_dropout: 0.1  # used on the entity output of the rgnn layer
     self_edge_dropout: 0.0
     edge_dropout: 0.0
     bias: False 
     weight_decomposition: None # relation_basis 
     num_blocks_or_bases: -1
-    +++: +++
-
-  # decoder: # specify which scorer to use as a decoder in the RGNN, one of the
-  #          # scoring functions. The original CompGCN model supports TransE,
-  #          # and Distmult but in principle any other function can be imported
-  #          # or passed
-  #   model: distmult
-  #   type: distmult
-  #   scorer: DistMultScorer 
-
   decoder: # specify which scorer to use as a decoder in the RGNN, one of the
            # scoring functions. The original CompGCN model supports TransE,
            # ConvE and Distmult but in principle any other function can be imported
@@ -62,4 +58,30 @@ compgcn:
         dim: 200            
         +++: +++
     scorer: ConvEScorer 
-    
+
+train:
+  type: KvsAll
+  loss: bce
+  #max_epochs: 500
+  max_epochs: 1
+  batch_size: 128
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      # betas: (0.9, 0.999)
+      eps: 1e-08
+      lr: 0.001
+      weight_decay: 0.0
+
+KvsAll:
+  label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 0 #especially for RGCN!
+
+
+random_seed:
+  numpy: 41504
+  torch: 41504
