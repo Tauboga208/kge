@@ -168,27 +168,27 @@ def sub(h_i, h_j, h_r, message_weight=None):
     return h_j-h_r   
 
 def sub_weighted(h_i, h_j, h_r, message_weight):
-    return h_j*rel_weight-h_r  
+    return h_j*message_weight-h_r  
 
 def mult(h_i, h_j, h_r, message_weight=None):
     return h_j*h_r   
 
 def mult_weighted(h_i, h_j, h_r, message_weight):
-    return h_j*h_r*rel_weight   
+    return h_j*h_r*message_weight   
 
 def ccorr(h_i, h_j, h_r, message_weight=None):
     return torch.irfft(
         com_mult(conj(torch.rfft(h_j, 1)), torch.rfft(h_r, 1)),
         1, 
-        signal_sizes=(h_r.shape[-1],)
+        signal_sizes=(h_j.shape[-1],)
     )  
 
 def ccorr_weighted(h_i, h_j, h_r, message_weight):
-    weighted_h_j = h_j * rel_weight
+    weighted_h_j = h_j * message_weight
     return torch.irfft(
         com_mult(conj(torch.rfft(weighted_h_j, 1)), torch.rfft(h_r, 1)),
         1, 
-        signal_sizes=(h_r.shape[-1],)
+        signal_sizes=(h_j.shape[-1],)
     )  
 
 def cross(h_i, h_j, h_r, message_weight=None):
@@ -197,7 +197,16 @@ def cross(h_i, h_j, h_r, message_weight=None):
 def cross_weighted(h_i, h_j, h_r, message_weight=None):
     return h_j*h_r*message_weight + h_j*message_weight
 
+# ---- # Helper functions for cross correlation ---- #
 
+def com_mult(a, b):
+    r1, i1 = a[..., 0], a[..., 1]
+    r2, i2 = b[..., 0], b[..., 1]
+    return torch.stack([r1 * r2 - i1 * i2, r1 * i2 + i1 * r2], dim = -1)
+
+def conj(a):
+    a[..., 1] = -a[..., 1]
+    return a
 
 
 # ---- Sparse Grouping of Values from Edges to Entites ---- #
