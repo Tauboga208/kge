@@ -47,11 +47,12 @@ kge start examples/toy-complex-train.yaml --job.device cpu
 2. [Results and pretrained models](#results-and-pretrained-models)
 3. [Using LibKGE](#using-libkge)
 4. [Currently supported KGE models](#currently-supported-kge-models)
-6. [Extending LibKGE](#extending-libkge)
-6. [Known issues](#known-issues)
-7. [Changelog](CHANGELOG.md)
-8. [Other KGE frameworks](#other-kge-frameworks)
-9. [How to cite](#how-to-cite)
+5. [Extending LibKGE](#extending-libkge)
+6. [FAQ](#faq)
+7. [Known issues](#known-issues)
+8. [Changelog](CHANGELOG.md)
+9. [Other KGE frameworks](#other-kge-frameworks)
+10. [How to cite](#how-to-cite)
 
 ## Features
 
@@ -503,6 +504,19 @@ implementation `MyClass`, you need to:
    modules: [ kge.job, kge.model, kge.model.embedder, mymodule ]
    import: [ mycomp ]
    ```
+
+## FAQ
+
+#### Are the configuration options documented somewhere?
+Yes, see [config-default.yaml](https://github.com/uma-pi1/kge/blob/master/kge/config-default.yaml) as well as the configuration files for each component listed [above](#features).
+
+#### Are the command line options documented somewhere?
+Yes, try `kge --help`. You may also obtain help for subcommands, e.g., try `kge dump --help` or `kge dump trace --help`.
+
+#### LibKGE runs out of memory. What can I do?
+- For training, set `train.subbatch_auto_tune` to true (equivalent result, less memory but slower).
+- For evaluation, set `entity_ranking.chunk_size` to, say, 10000 (equivalent result, less memory but slightly slower, the more so the smaller the chunk size).
+- Change hyperparameters (non-equivalent result): e.g., decrease the batch size, use negative sampling, use less samples).
 
 ## Known issues
 
