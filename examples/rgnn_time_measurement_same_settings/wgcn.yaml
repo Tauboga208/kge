@@ -1,0 +1,59 @@
+# Time measurement settings for WGCN
+import: [rgnn_encoder, lookup_embedder]
+
+job.type: train
+dataset.name: fb15k-237
+model: wgcn
+
+wgcn:
+  entity_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 100
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 100
+    +++: +++
+  encoder:
+    type: rgnn_encoder
+    layer_type: weighted_gcn 
+    activation: tanh
+    rel_transformation: self
+    num_layers: 1
+    emb_entity_dropout: 0.25  
+    bias: True 
+  decoder:
+    model: transe
+    type: transe
+    scorer: TransEScorer 
+
+train:
+  type: negative_sampling
+  loss: bce
+  max_epochs: 1
+  batch_size: 256 
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      lr: 0.01
+      weight_decay: 0.0
+
+negative_sampling:
+  num_samples:
+    s: 10
+    p: 10
+    o: -1  # means: as s
+  filtering:
+    s: True
+    o: True
+    p: True
+    implementation: fast_if_available
+
+random_seed:
+  numpy: 41504
+  torch: 41504

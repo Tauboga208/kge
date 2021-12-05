@@ -1,9 +1,15 @@
-# Default Settings for WGCN on WN18RR
 import: [rgnn_encoder, lookup_embedder]
 
-job.type: train
-dataset.name: wnrr
+dataset.name: fb15k-237
 model: wgcn
+
+job.type: search
+search.type: grid
+grid_search.parameters:
+    train.optimizer.default.args.lr: [0.001, 0.0001]
+    train.batch_size: [256, 512]
+    rgnn_encoder.num_layers: [1,2]
+    rgnn_encoder.emb_entity_dropout: [0.2, 0.3]
 
 wgcn:
   entity_embedder:
@@ -24,39 +30,33 @@ wgcn:
     activation: tanh
     rel_transformation: self
     num_layers: 2
-    emb_entity_dropout: 0.25 
+    emb_entity_dropout: 0.2  
     bias: True 
-  decoder: # here normal ConvE, SACN uses an adapted version of ConvE
-    model: reciprocal_relations_model
-    type: reciprocal_relations_model
-    base_model.type: conve
-      #type: kge_model
-    reciprocal_relations_model.base_model.type: conve
-    base_model:
-      round_dim: True
-      entity_embedder: # see as output size of Rgnn
-        dim: 200            
-        +++: +++
-      relation_embedder:
-        dim: 200            
-        +++: +++
-    scorer: ConvEScorer 
+  decoder:
+    model: distmult
+    type: distmult
+    scorer: DistMultScorer 
 
 train:
   type: KvsAll
   loss: bce
   max_epochs: 1000
-  batch_size: 128
+  batch_size: 256
   optimizer.default:
     type: Adam
     args:
       amsgrad: False
       eps: 1e-08
-      lr: 0.003
-      weight_decay: 1.0
+      lr: 0.001
+      weight_decay: 0.0
 
 KvsAll:
   label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 30 
+
 
 random_seed:
   numpy: 41504

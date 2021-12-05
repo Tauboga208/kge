@@ -20,7 +20,7 @@ valid:
   metric: mean_reciprocal_rank_filtered_with_test
 
 lookup_embedder:
-  dim: 90
+  dim: 200
   initialize: xavier_normal_
 
 conve:

@@ -1,0 +1,63 @@
+import: [rgnn_encoder, lookup_embedder]
+
+job.type: train
+dataset.name: fb15k-237
+model: compgcn
+
+compgcn:
+  entity_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 100
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    initialize: xavier_normal_
+    regularize: ''
+    dim: 100
+    +++: +++
+  encoder:
+    type: rgnn_encoder
+    layer_type: message_passing 
+    message_passing_args:
+      edge_norm: True
+      emb_propagation_dropout: 0.3  
+      propagation: direction 
+      composition: mult  
+      message_weight: False
+      attention: False
+    activation: tanh
+    rel_transformation: linear
+    num_layers: 1
+    emb_entity_dropout: 0.1  
+    bias: False 
+  decoder: # distmult used for faster reproduction (less fine tuning)
+    model: distmult
+    type: distmult
+    scorer: DistMultScorer
+
+train:
+  type: KvsAll
+  loss: bce
+  max_epochs: 500
+  batch_size: 128
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      eps: 1e-08
+      lr: 0.001
+      weight_decay: 0.0
+
+KvsAll:
+  label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 30 
+
+
+random_seed:
+  numpy: 41504
+  torch: 41504

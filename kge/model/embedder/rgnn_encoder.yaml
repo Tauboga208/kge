@@ -1,40 +1,79 @@
-
 rgnn_encoder:
   class_name: RgnnEncoder
 
-  # arguments for all layers:
+  # specifies the number of R-GNN layers:
   num_layers: 2
-  1_out_dim: -1
+  # set only if different output dim than input dim is wanted for
+  # the specific layer:
+  1_out_dim: -1 
   2_out_dim: -1
   3_out_dim: -1
   4_out_dim: -1
 
+  # If use_stale_embeddings is True, the R-GNN is computed once per batch, 
+  # if False up to 6 times (negative sampling)
+  use_stale_embeddings: True
+
+  # activation used after each R-GNN layer (or before in the case of R-GCN)
   activation: relu
-  weight_init: xavier_normal_
+  weight_init: xavier_normal_ # any initialisation from torch.nn.init can be
+  # used. It is also possible to specify a user-defined initialisation in 
+  # rgnn_utils.py
   bias: True 
   bias_init: zeros_ # ones_, uniform_, normal_ ... (from torch.nn.init)
   
-  weight_decomposition: None # block, basis, relation_basis
-  num_blocks_or_bases: -1
+  weight_decomposition: None # block, basis, relation_basis. See the R-GCN
+  # paper (https://arxiv.org/pdf/1703.06103.pdf) for more information on block
+  # and basis decomposition, the CompGCN
+  # paper(https://arxiv.org/pdf/1911.03082.pdf) for relation basis decomposition. 
+  # Block and Basis Decomposition decompose the weights used in the
+  # convolutions, Relation Basis Decomposition decomposes the relation embeddings. 
+  num_blocks_or_bases: -1 # Specifies the number of blocks or bases for the
+  # chosen weight decomposition
 
-  edge_dropout: 0.0 # drop edges from the graphs
-  self_edge_dropout: 0.0 # drop self-edges from the graph
+  edge_dropout: 0.0 # specifies the percentage of edges dropped from the graph
+  self_edge_dropout: 0.0 # specifies the percentage of self- edges dropped from
+  # the graph
   emb_entity_dropout: 0.0  # used on the entity embedding output of the rgnn layer
   
-  rel_transformation: linear # self, linear, convoluted
+  rel_transformation: linear # Determines whether the relation embedding
+  # remains un-transformed (self) or undergoes a linear transformation (linear)
   
-  layer_type: message_passing # other options: torch_rgcn
+  layer_type: message_passing # message passing can be configured to any of the
+  # models. Other options: torch_rgcn (R-GCN) and weighted_wgcn(W-GCN).
+
   # Specific Arguments for the MessagePassingLayer
   message_passing_args:
-    propagation: direction  # per_relation, single, single_with_self_edge_weight
-    composition: sub # neighbor, mult, ccorr
-    message_weight: False
-    edge_norm: True 
+    propagation: direction  # per_relation, single,
+    # single_with_self_edge_weight. Determines which edges are convoluted with
+    # which weight. In `per_relation`, all triples with relation r get weight
+    # W_r. In `single`, all edges share one weight.
+    # `single_with_self_edge_weight` has one weight for self-edges and one for
+    # all others, and direction has three weights: one for self-edges, one for
+    # incoming edges and one for outgoing edges.
+    composition: sub # Determines how the entity and relation embeddings
+    # interact in the message. Any composition function in rgnn_utils.py can be
+    # chosen or added (it has to take the arguments h_i, h_j, h_r, weighted;
+    # even if it does not have to use all three embeddings). 
+    # neighbor (returns h_j), mult(h_r*h_j), ccorr (h_r \star h_j), cross
+    # (h_j*h_r+h_j)
+    message_weight: False # if True, uses the weighted version of the
+    # chosen composition.
+    learned_relation_weight: False # if True learns weight \alpha_r for each relation
+    edge_norm: True # weighs the edge times \frac{1}{\sqrt{D_i}\sqrt{D_j}},
+    # where D_i and D_j are the degrees of nodes i and j of the edge.
     emb_propagation_dropout: 0.0 # used after the propagation function in the
                                  # message passing layer
-    attention: False
-    num_heads: 1
+    attention: False # If True, computes a attention weight for the message of
+    # each relation-neighbour pair of a central node.
+    num_heads: 1 # Number of heads for R-GATs.
+  # Specific Arguments for the TorchRgcnLayer
   torch_rgcn_args:
+    # The TorchRGCN implementation stacks the 3D adjacency to 2D to be able to
+    # use sparse matrices (more information in
+    # https://arxiv.org/pdf/2107.10015.pdf). Horizontal should be used for
+    # high-dimensional input and low-dimensional output, vertical in the
+    # reversed case.
     vertical_stacking: False
    
   

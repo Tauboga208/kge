@@ -6,17 +6,16 @@ wgcn:
     type: lookup_embedder
     initialize: xavier_normal_ 
     dim: 100
-    # regularize: ''
     +++: +++
   relation_embedder:
     type: lookup_embedder
     initialize: xavier_normal_
-    # regularize: ''
     dim: 100
     +++: +++
   encoder:
     type: rgnn_encoder
-    layer_type: "weighted_gcn"
+    layer_type: weighted_gcn # this layer is specific to the WGCN model 
+    #layer_type: message_passing
     edge_dropout: 0.0
     self_edge_dropout: 0.0
     activation: tanh
@@ -24,16 +23,28 @@ wgcn:
     bias: True 
     num_layers: 2
     rel_transformation: self
-    1_out_dim: 200
-      #2_in_dim: 200
-    2_out_dim: 100
-    weight_init: wgcn_uniform_
+    #weight_init: wgcn_uniform_
+    weight_init: xavier_uniform_
     bias_init: wgcn_uniform_
+    use_stale_embeddings: True
+          # Specific Arguments for the MessagePassingLayer
+    message_passing_args:
+      propagation: single_with_self_edge_weight  
+      composition: neighbor 
+      message_weight: False 
+      learned_relation_weight: True # special flag for W-GCN
+      edge_norm: True 
+      emb_propagation_dropout: 0.0 
+      attention: False 
+      num_heads: 1 
+      +++: +++
     +++: +++
-  decoder: # specify which scorer to use as a decoder in the RGNN, one of the
-           # scoring functions. The original CompGCN model supports TransE,
-           # ConvE and Distmult but in principle any other function can be imported
-           # or passed
+
+  decoder: # specify which scorer to use as a decoder for WGCN. The original
+           # WGCN model supports a decoder called ConvE-TransE, which is not
+           # available in LibKGE. Any other decoder implemented as a model
+           # except for the other R-GNN models (CompGCN, RAGAT and RGCN) can be
+           # used (has to be imported in the first line).
     model: reciprocal_relations_model
     type: reciprocal_relations_model
     base_model.type: conve
@@ -41,7 +52,9 @@ wgcn:
     reciprocal_relations_model.base_model.type: conve
     base_model:
       round_dim: True
-      entity_embedder: # see as output size of Rgnn
+      feature_map_dropout: 0.3
+      projection_dropout: 0.2
+      entity_embedder: 
         dim: 100            
         +++: +++
       relation_embedder:

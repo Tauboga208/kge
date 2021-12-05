@@ -1,4 +1,4 @@
-# Get all settings similar to default settings in CompGCN
+# Default settings for CompGCN on FB15k-237
 import: [rgnn_encoder, lookup_embedder]
 
 job.type: train
@@ -6,7 +6,6 @@ dataset.name: fb15k-237
 model: compgcn
 
 compgcn:
-  # type: rgnn
   entity_embedder:
     type: lookup_embedder
     initialize: xavier_normal_
@@ -62,25 +61,18 @@ compgcn:
 train:
   type: KvsAll
   loss: bce
-  #max_epochs: 500
-  max_epochs: 1
+  max_epochs: 500
   batch_size: 128
   optimizer.default:
     type: Adam
     args:
       amsgrad: False
-      # betas: (0.9, 0.999)
       eps: 1e-08
       lr: 0.001
       weight_decay: 0.0
 
 KvsAll:
   label_smoothing: 0.1
-
-valid:
-  early_stopping: 
-    patience: 0 #especially for RGCN!
-
 
 random_seed:
   numpy: 41504

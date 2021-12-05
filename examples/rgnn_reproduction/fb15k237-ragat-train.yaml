@@ -1,4 +1,3 @@
-# Default settings in RAGAT for FB15l-237
 import: [rgnn_encoder, lookup_embedder]
 
 job.type: train
@@ -23,12 +22,10 @@ ragat:
     num_layers: 1
     activation: relu
     weight_init: xavier_normal_
-    bias: False 
-    bias_init: zeros_
+    edge_dropout: 0.0 
+    self_edge_dropout: 0.0 
     emb_entity_dropout: 0.3  
     rel_transformation: linear 
-    layer_type: message_passing 
-    # Specific Arguments for the MessagePassingLayer
     message_passing_args:
       propagation: direction  
       composition: cross_weighted 
@@ -38,21 +35,10 @@ ragat:
       num_heads: 2
       message_weight: True
     +++: +++
-  decoder: # here ConvE, RAGAT uses InteractE 
-    model: reciprocal_relations_model
-    type: reciprocal_relations_model
-    base_model.type: conve
-      #type: kge_model
-    reciprocal_relations_model.base_model.type: conve
-    base_model:
-      round_dim: True
-      entity_embedder: # see as output size of Rgnn
-        dim: 200            
-        +++: +++
-      relation_embedder:
-        dim: 200            
-        +++: +++
-    scorer: ConvEScorer 
+  decoder: 
+    model: distmult
+    type: distmult
+    scorer: DistMultScorer
 
 train:
   type: KvsAll
@@ -69,6 +55,11 @@ train:
 
 KvsAll:
   label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 30 
+
 
 random_seed:
   numpy: 41504

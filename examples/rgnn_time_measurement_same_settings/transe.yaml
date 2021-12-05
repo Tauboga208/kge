@@ -1,0 +1,48 @@
+## Time measurement settings for TransE
+import: [lookup_embedder]
+
+job.type: train
+dataset.name: fb15k-237
+model: transe
+
+transe:
+  entity_embedder:
+    type: lookup_embedder
+    dim: 100
+    initialize: xavier_uniform_
+    regularize: 'lp'
+    +++: +++
+
+  relation_embedder:
+    type: lookup_embedder
+    dim: 100
+    initialize: xavier_uniform_
+    regularize: 'lp'
+    +++: +++
+
+train:
+  type: negative_sampling
+  loss: bce
+  max_epochs: 1
+  batch_size: 256 
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      lr: 0.01
+      weight_decay: 0.0
+
+negative_sampling:
+  num_samples:
+    s: 10
+    p: 10
+    o: -1  # means: as s
+  filtering:
+    s: True
+    o: True
+    p: True
+    implementation: fast_if_available
+
+random_seed:
+  numpy: 41504
+  torch: 41504

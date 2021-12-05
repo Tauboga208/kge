@@ -1,4 +1,4 @@
-# Get all settings similar to default settings in SACN
+# Default Settings for RAGAT on WN18RR
 import: [rgnn_encoder, lookup_embedder]
 
 job.type: train
@@ -24,23 +24,16 @@ ragat:
     activation: relu
     weight_init: xavier_normal_
     bias: False 
-    bias_init: zeros_ # ones_, uniform_, normal_ ... (from torch.nn.init)
-    weight_decomposition: None # block, basis, relation_basis
-    num_blocks_or_bases: -1
-    edge_dropout: 0.0 # drop edges from the graphs
-    self_edge_dropout: 0.0 # drop self-edges from the graph
-    emb_entity_dropout: 0.3  # used on the entity embedding output of the rgnn layer
-    
-    rel_transformation: linear # self, linear, convoluted
-    
-    layer_type: message_passing # other options: torch_rgcn
+    bias_init: zeros_ 
+    emb_entity_dropout: 0.3  
+    rel_transformation: linear 
+    layer_type: message_passing 
     # Specific Arguments for the MessagePassingLayer
     message_passing_args:
-      propagation: direction  # per_relation, single, single_with_self_edge_weight
-      composition: cross_weighted # neighbor, mult, ccorr, cross
+      propagation: direction  #
+      composition: cross_weighted 
       edge_norm: False 
-      emb_propagation_dropout: 0.4 # used after the propagation function in the
-                                  # message passing layer
+      emb_propagation_dropout: 0.4 
       attention: True
       num_heads: 1
       message_weight: True
@@ -70,18 +63,12 @@ train:
     type: Adam
     args:
       amsgrad: False
-      # betas: (0.9, 0.999)
       eps: 1e-08
       lr: 0.001
       weight_decay: 0.0
 
 KvsAll:
   label_smoothing: 0.1
-
-valid:
-  early_stopping: 
-    patience: 0 #especially for RGCN!
-
 
 random_seed:
   numpy: 41504

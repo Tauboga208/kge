@@ -1,4 +1,4 @@
-# Default settings in RAGAT for FB15l-237
+# Time measurement settings for RAGAT
 import: [rgnn_encoder, lookup_embedder]
 
 job.type: train
@@ -24,7 +24,7 @@ ragat:
     activation: relu
     weight_init: xavier_normal_
     bias: False 
-    bias_init: zeros_
+    bias_init: zeros_ 
     emb_entity_dropout: 0.3  
     rel_transformation: linear 
     layer_type: message_passing 
@@ -38,38 +38,35 @@ ragat:
       num_heads: 2
       message_weight: True
     +++: +++
-  decoder: # here ConvE, RAGAT uses InteractE 
-    model: reciprocal_relations_model
-    type: reciprocal_relations_model
-    base_model.type: conve
-      #type: kge_model
-    reciprocal_relations_model.base_model.type: conve
-    base_model:
-      round_dim: True
-      entity_embedder: # see as output size of Rgnn
-        dim: 200            
-        +++: +++
-      relation_embedder:
-        dim: 200            
-        +++: +++
-    scorer: ConvEScorer 
+  decoder:
+    model: transe
+    type: transe
+    scorer: TransEScorer 
 
 train:
-  type: KvsAll
+  type: negative_sampling
   loss: bce
-  max_epochs: 1500
-  batch_size: 1024
+  max_epochs: 1
+  batch_size: 256 
   optimizer.default:
     type: Adam
     args:
       amsgrad: False
-      eps: 1e-08
-      lr: 0.001
+      lr: 0.01
       weight_decay: 0.0
 
-KvsAll:
-  label_smoothing: 0.1
+negative_sampling:
+  num_samples:
+    s: 10
+    p: 10
+    o: -1  # means: as s
+  filtering:
+    s: True
+    o: True
+    p: True
+    implementation: fast_if_available
 
 random_seed:
   numpy: 41504
   torch: 41504
+

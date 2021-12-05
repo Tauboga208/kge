@@ -17,7 +17,8 @@ ragat:
   encoder:
     type: rgnn_encoder
     num_layers: 1
-
+    use_stale_embeddings: True
+    
     activation: relu
     weight_init: xavier_normal_
     bias: False 

@@ -1,21 +1,29 @@
-# Default settings from RGCN PyTorch implementation
 import: [rgnn_encoder, lookup_embedder]
 
-job.type: train
-dataset.name: fb15k-237
+job.type: search
+dataset.name: kinship
 model: rgcn
+
+search.type: grid
+search.num_workers: 1
+search.device_pool: ['cuda:1']
+grid_search.parameters:
+    train.optimizer.default.args.lr: [0.001, 0.0001]
+    train.batch_size: [256, 512]
+    rgnn_encoder.weight_decomposition: [block, basis]
+    rgnn_encoder.num_blocks_or_bases: [100, 200]
 
 rgcn:
   entity_embedder:
     type: lookup_embedder
-    dim: 500
+    dim: 100
     initialize: xavier_uniform_
     regularize: 'lp'
     +++: +++
 
   relation_embedder:
     type: lookup_embedder
-    dim: 500
+    dim: 100
     initialize: xavier_uniform_
     regularize: 'lp'
     +++: +++
@@ -26,8 +34,6 @@ rgcn:
     layer_type: torch_rgcn
     bias: True 
     weight_init: xavier_uniform_
-    weight_decomposition: block # other option: basis
-    num_blocks_or_bases: 100
     rel_transformation: self 
     edge_dropout: 0.5
     self_edge_dropout: 0.2
@@ -39,30 +45,23 @@ rgcn:
     scorer: DistMultScorer 
 
 train:
-  type: negative_sampling
+  type: KvsAll
   loss: bce
-  max_epochs: 12000
-  batch_size: 30000 # set same as graph sampling size to use full batch optimization
+  max_epochs: 5000
   optimizer.default:
     type: Adam
     args:
       amsgrad: False
-      lr: 0.01
+      eps: 1e-08
       weight_decay: 0.0
 
-negative_sampling:
-  graph_sampling: edge_neighbourhood
-  graph_sampling_size: 30000
-  num_samples:
-    s: 10
-    p: 10
-    o: -1  # means: as s
-  filtering:
-    s: True
-    o: True
-    p: True
-    implementation: fast_if_available
-    
+KvsAll:
+  label_smoothing: 0.1
+
+valid:
+  early_stopping: 
+    patience: 30 
+
 random_seed:
   numpy: 41504
   torch: 41504

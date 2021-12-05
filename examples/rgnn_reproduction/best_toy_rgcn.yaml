@@ -1,23 +1,21 @@
-# Default settings from RGCN PyTorch implementation
 import: [rgnn_encoder, lookup_embedder]
 
-job.type: train
-dataset.name: fb15k-237
-model: rgcn
 
+job.type: train
+dataset.name: toy
+
+model: rgcn
 rgcn:
   entity_embedder:
     type: lookup_embedder
     dim: 500
     initialize: xavier_uniform_
-    regularize: 'lp'
     +++: +++
 
   relation_embedder:
     type: lookup_embedder
     dim: 500
     initialize: xavier_uniform_
-    regularize: 'lp'
     +++: +++
 
   encoder:
@@ -26,33 +24,33 @@ rgcn:
     layer_type: torch_rgcn
     bias: True 
     weight_init: xavier_uniform_
-    weight_decomposition: block # other option: basis
+    weight_decomposition: basis 
     num_blocks_or_bases: 100
     rel_transformation: self 
-    edge_dropout: 0.5
-    self_edge_dropout: 0.2
+    edge_dropout: 0.3
+    self_edge_dropout: 0.0
     +++: +++  
   
   decoder:
-    model: distmult
-    type: distmult
-    scorer: DistMultScorer 
+    model: transe
+    type: transe
+    scorer: TransEScorer 
 
 train:
   type: negative_sampling
   loss: bce
   max_epochs: 12000
-  batch_size: 30000 # set same as graph sampling size to use full batch optimization
+  batch_size: 300
   optimizer.default:
     type: Adam
     args:
       amsgrad: False
-      lr: 0.01
+      lr: 0.0001
       weight_decay: 0.0
 
 negative_sampling:
   graph_sampling: edge_neighbourhood
-  graph_sampling_size: 30000
+  graph_sampling_size: 300
   num_samples:
     s: 10
     p: 10
@@ -62,7 +60,12 @@ negative_sampling:
     o: True
     p: True
     implementation: fast_if_available
-    
+  
+
+valid:
+  early_stopping: 
+    patience: 50 
+
 random_seed:
   numpy: 41504
   torch: 41504

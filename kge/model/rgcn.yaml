@@ -19,7 +19,7 @@ rgcn:
     type: rgnn_encoder
     # CompGCN specific RGNN parameters:
     layer_type: torch_rgcn # rgcn supports both torch_rgcn and message_passing (slower)
-
+    use_stale_embeddings: True
     torch_rgcn_args:
       vertical_stacking: False
     message_passing_args:
@@ -40,7 +40,7 @@ rgcn:
     emb_entity_dropout: 0.0  # used on the entity output of the rgnn layer
     
     bias: True 
-    weight_init: xavier_uniform_
+    weight_init: schlichtkrull_normal_
     weight_decomposition: block # other option: basis
     num_blocks_or_bases: 100
     rel_transformation: self

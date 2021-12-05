@@ -1,0 +1,44 @@
+import: [rgnn_encoder, lookup_embedder]
+
+job.type: search
+dataset.name: kinship
+
+train.optimizer.default.type: Adam
+model: distmult
+
+search.type: grid
+grid_search.parameters:
+    train.optimizer.default.args.lr: [0.001, 0.0001]
+    train.batch_size: [256, 512]
+
+distmult:
+  entity_embedder:
+    type: lookup_embedder
+    dim: 200
+    +++: +++
+  relation_embedder:
+    type: lookup_embedder
+    dim: 200
+    +++: +++
+
+train:
+  type: KvsAll
+  loss: bce
+  max_epochs: 5000
+  optimizer.default:
+    type: Adam
+    args:
+      amsgrad: False
+      eps: 1e-08
+      weight_decay: 0.0
+
+KvsAll:
+  label_smoothing: 0.1
+  
+valid:
+  early_stopping: 
+    patience: 30 #especially for RGCN!
+
+random_seed:
+  numpy: 41504
+  torch: 41504

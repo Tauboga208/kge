@@ -28,6 +28,7 @@ compgcn:
     activation: tanh
     rel_transformation: linear
     num_layers: 2
+    use_stale_embeddings: True
     emb_entity_dropout: 0.1  # used on the entity output of the rgnn layer
     self_edge_dropout: 0.0
     edge_dropout: 0.0
