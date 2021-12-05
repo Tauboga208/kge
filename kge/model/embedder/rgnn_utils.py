@@ -1,11 +1,14 @@
 from math import floor, sqrt
 import random
 import torch
+from torch import Tensor
 from typing import Optional, Tuple
 
 # ---- Message Passing Helper Functions ---- #
 
-# TODO referencen woher (CompGCN special ding)
+# The scatter functionalty is copied from the source of torch_scatter
+# (https://github.com/rusty1s/pytorch_scatter) as the package is not compatible
+# with the other packages.
 def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
     if dim < 0:
         dim = other.dim() + dim
@@ -17,9 +20,10 @@ def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int):
     src = src.expand_as(other)
     return src
 
-def scatter_sum(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
-                out: Optional[torch.Tensor] = None,
-                dim_size: Optional[int] = None) -> torch.Tensor:
+def scatter_sum(
+    src: torch.Tensor, index: torch.Tensor, dim: int = -1,
+    out: Optional[torch.Tensor] = None, dim_size: Optional[int] = None
+) -> torch.Tensor:
     index = broadcast(index, src, dim)
     if out is None:
         size = list(src.size())
@@ -34,18 +38,15 @@ def scatter_sum(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
     else:
         return out.scatter_add_(dim, index, src)
 
-
 def scatter_add(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
                 out: Optional[torch.Tensor] = None,
                 dim_size: Optional[int] = None) -> torch.Tensor:
     return scatter_sum(src, index, dim, out, dim_size)
 
-
 def scatter_mul(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
                 out: Optional[torch.Tensor] = None,
                 dim_size: Optional[int] = None) -> torch.Tensor:
     return torch.ops.torch_scatter.scatter_mul(src, index, dim, out, dim_size)
-
 
 def scatter_mean(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
                  out: Optional[torch.Tensor] = None,
@@ -70,20 +71,17 @@ def scatter_mean(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
         out.floor_divide_(count)
     return out
 
-
 def scatter_min(
         src: torch.Tensor, index: torch.Tensor, dim: int = -1,
         out: Optional[torch.Tensor] = None,
         dim_size: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     return torch.ops.torch_scatter.scatter_min(src, index, dim, out, dim_size)
 
-
 def scatter_max(
         src: torch.Tensor, index: torch.Tensor, dim: int = -1,
         out: Optional[torch.Tensor] = None,
         dim_size: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     return torch.ops.torch_scatter.scatter_max(src, index, dim, out, dim_size)
-
 
 def scatter(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
             out: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
@@ -151,50 +149,52 @@ def schlichtkrull_uniform_(tensor, gain=1., shape=None):
     with torch.no_grad():
         return tensor.uniform_(-std, std)
 
+# W-GCN-specific initialisation function
 def wgcn_uniform_(tensor):
     if tensor.dim()==1:
         std = 1./sqrt(tensor.size(0))
+        with torch.no_grad():
+            return tensor.uniform_(-std, std)
     if tensor.dim()==2:
         std = 1./sqrt(tensor.size(1))
-    with torch.no_grad():
-        return tensor.uniform_(-std, std)
+        with torch.no_grad():
+            return tensor.data.uniform_(-std, std)
+    #return tensor.data.uniform_(-std, std)
 
 # ---- Composition Functions for Message Passing ---- #
 
-def neighbor(h_i, h_j, h_r, message_weight=None):
+def neighbor(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
     return h_j
 
-def sub(h_i, h_j, h_r, message_weight=None):
+def sub(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
     return h_j-h_r   
 
-def sub_weighted(h_i, h_j, h_r, message_weight):
+def sub_weighted(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight) -> Tensor:
     return h_j*message_weight-h_r  
 
-def mult(h_i, h_j, h_r, message_weight=None):
+def mult(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
     return h_j*h_r   
 
-def mult_weighted(h_i, h_j, h_r, message_weight):
+def mult_weighted(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight) -> Tensor:
     return h_j*h_r*message_weight   
 
-def ccorr(h_i, h_j, h_r, message_weight=None):
-    return torch.irfft(
-        com_mult(conj(torch.rfft(h_j, 1)), torch.rfft(h_r, 1)),
-        1, 
-        signal_sizes=(h_j.shape[-1],)
+def ccorr(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
+    return _irfft(
+        com_mult(conj(_rfft(h_j, 1)), _rfft(h_r, 1)),
+        signal_size=h_j.shape[-1]
     )  
 
-def ccorr_weighted(h_i, h_j, h_r, message_weight):
+def ccorr_weighted(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight) -> Tensor:
     weighted_h_j = h_j * message_weight
-    return torch.irfft(
-        com_mult(conj(torch.rfft(weighted_h_j, 1)), torch.rfft(h_r, 1)),
-        1, 
-        signal_sizes=(h_j.shape[-1],)
+    return _irfft(
+        com_mult(conj(_rfft(weighted_h_j, 1)), _rfft(h_r, 1)),
+        signal_size=h_j.shape[-1]
     )  
 
-def cross(h_i, h_j, h_r, message_weight=None):
+def cross(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
     return h_j*h_r+h_j
 
-def cross_weighted(h_i, h_j, h_r, message_weight=None):
+def cross_weighted(h_i: Tensor, h_j: Tensor, h_r: Tensor, message_weight=None) -> Tensor:
     return h_j*h_r*message_weight + h_j*message_weight
 
 # ---- # Helper functions for cross correlation ---- #
@@ -208,12 +208,20 @@ def conj(a):
     a[..., 1] = -a[..., 1]
     return a
 
+def _rfft(x, signal_ndim=1): 
+    # simulate rfft from torch.rfft (deprecated) 
+    x = torch.fft.rfft(x) 
+    x = torch.cat([x.real.unsqueeze(dim=2), x.imag.unsqueeze(dim=2)], dim=2) 
+    return x
+
+def _irfft(x, signal_size=1): 
+    # simulate irfft from torch.irfft(deprecated)
+    x = x[:,:(x.shape[1] // 2 + 1),:] 
+    x = torch.complex(x[:,:,0].float(), x[:,:,1].float()) 
+    x = torch.fft.irfft(x, n=signal_size) 
+    return x
 
 # ---- Sparse Grouping of Values from Edges to Entites ---- #
-
-import torch
-
-
 class Edge2NodeFunction(torch.autograd.Function):
     """Sparse aggregation of values from edges to either messaging or receiving
     nodes.
