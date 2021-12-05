@@ -112,7 +112,6 @@ class TrainingJobNegativeSampling(TrainingJob):
             # labels[:, 0] = 1
             # labels = labels.view(-1)
             
-
             negative_samples = list()
             for slot in [S, P, O]:
                 negative_samples.append(self._sampler.sample(triples, slot))
@@ -197,5 +196,13 @@ class TrainingJobNegativeSampling(TrainingJob):
             # backward pass for this slot in the subbatch
             result.backward_time -= time.time()
             if not self.is_forward_only:
-                loss_value_torch.backward()
+                model = self.config.get("model")
+                if self.config.exists(model + ".encoder"):
+                    use_stale = self.config.get(model+  ".encoder.use_stale_embeddings")
+                    if use_stale:
+                        loss_value_torch.backward(retain_graph=True) 
+                    else:   
+                        loss_value_torch.backward()
+                else:   
+                    loss_value_torch.backward()
             result.backward_time += time.time()
