@@ -183,8 +183,8 @@ class EntityRankingJob(EvaluationJob):
 
             # compute true scores beforehand, since we can't get them from a chunked
             # score table
-            o_true_scores = self.model.score_spo(s, p, o, "o").view(-1)
             s_true_scores = self.model.score_spo(s, p, o, "s").view(-1)
+            o_true_scores = self.model.score_spo(s, p, o, "o").view(-1)
 
             # default dictionary storing rank and num_ties for each key in rankings
             # as list of len 2: [rank, num_ties]
