@@ -291,5 +291,13 @@ class TrainingJobKvsAll(TrainingJob):
                 result.forward_time += time.time()
                 result.backward_time -= time.time()
                 if not self.is_forward_only:
-                    loss_value.backward()
+                    model = self.config.get("model")
+                    if self.config.exists(model + ".encoder"):
+                        use_stale = self.config.get(model+  ".encoder.use_stale_embeddings")
+                        if use_stale:
+                            loss_value.backward(retain_graph=True) 
+                        else:   
+                            loss_value.backward()
+                    else:   
+                        loss_value.backward()
                 result.backward_time += time.time()
