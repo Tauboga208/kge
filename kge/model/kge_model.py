@@ -772,19 +772,18 @@ class KgeModel(KgeBase):
 
 
 class KgeRgnnEncoder(KgeBase):
-    r"""Base class for all Rgnn Encoders.
-    Runs a graph neural network over the knowledge graph to compute embeddings
-    with aggregated neighborhood information. 
-
-    """
-
     def __init__(
         self,
         config: Config,
         dataset: Dataset,
         configuration_key: str,
         init_for_load_only=False,
-    ):
+    ) -> "KgeRgnnEncoder":
+        r"""Base class for all Rgnn Encoders.
+        Runs a graph neural network over the knowledge graph to compute embeddings
+        with aggregated neighborhood information. 
+
+    """
         super().__init__(config, dataset, configuration_key)
 
         #: location of the configuration options of this encoder
@@ -810,9 +809,6 @@ class KgeRgnnEncoder(KgeBase):
                     )
                 )
 
-        # TODO: ist das nötig? --> gleichsetzen mit den von den embeddern
-        # self.dim: int = self.get_option("dim")
-
     @staticmethod
     def create(
         config: Config,
@@ -820,8 +816,8 @@ class KgeRgnnEncoder(KgeBase):
         configuration_key: str,
         entity_embedder: KgeEmbedder,
         relation_embedder: KgeEmbedder,
-        reciprocal_scorer: False,
-        init_for_load_only=False, # TODO: wofür braucht man das?
+        reciprocal_scorer: bool = False,
+        init_for_load_only: bool =False, 
     ) -> "KgeRgnnEncoder":
         """Factory method for rgnn encoder creation."""
 
@@ -862,15 +858,14 @@ class KgeRgnnEncoder(KgeBase):
 
         """
 
-    def encode_spo(self, s, p, o):
+    def encode_spo(
+        self, s: Tensor, p: Tensor, o: Tensor
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         raise NotImplementedError
 
 
 class KgeRgnnModel(KgeModel):
-    r"""
-    This class extends the KgeModel with a RGNN Encoder between the embedders and the scoring
-    function. 
-    """
+
     def __init__(
         self,
         config: Config,
@@ -879,9 +874,10 @@ class KgeRgnnModel(KgeModel):
         create_embedders=True,
         configuration_key=None,
         init_for_load_only=False,
-    ):
-
-        
+    ) -> "KgeRgnnModel":
+        r"""This class extends the KgeModel with a RGNN Encoder between the embedders and the scoring
+        function in the score_** methods. 
+        """
         self.orig_num_relations = dataset.num_relations()
 
         # add reciprocal relations in dataset to get the relation embeddings
@@ -908,7 +904,6 @@ class KgeRgnnModel(KgeModel):
             init_for_load_only=init_for_load_only,
         )
 
-        # TODO kann man den allgemein aus dem Encoder ziehen?
         self._scorer: RelationalScorer
         if type(scorer) == type:
             self._scorer = decoder.get_scorer()
@@ -966,7 +961,7 @@ class KgeRgnnModel(KgeModel):
                 "The reciprocal relations model cannot compute "
                 "undirected spo scores."
             )
-        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o, direction)
         return self._scorer.score_emb(s, p, o, combine="spo").view(-1)
 
     def score_sp(self, s: Tensor, p: Tensor, o: Tensor = None) -> Tensor:
@@ -982,7 +977,7 @@ class KgeRgnnModel(KgeModel):
         If `o` is not None, it is a vector holding the indexes of the objects to score.
 
         """
-        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+        s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o, direction="sp_")
         return self._scorer.score_emb(s, p, o, combine="sp_")
 
     def score_po(self, p: Tensor, o: Tensor, s: Tensor = None) -> Tensor:
@@ -1001,10 +996,10 @@ class KgeRgnnModel(KgeModel):
         
         if self.reciprocal_scorer:
             p = p + self.orig_num_relations
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o, direction="_po")
             return self._scorer.score_emb(o, p, s, combine="sp_")
         else:
-            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o)
+            s, p, o = self.get_rgnn_encoder().encode_spo(s, p, o, direction="_po")
             return self._scorer.score_emb(s, p, o, combine="_po")
 
     def score_so(self, s: Tensor, o: Tensor, p: Tensor = None) -> Tensor:
@@ -1052,11 +1047,11 @@ class KgeRgnnModel(KgeModel):
             p = torch.cat([p, p_inv])
         if entity_subset is not None:
             s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
-                s, p, o, entity_subset
+                s, p, o, entity_subset=entity_subset
             )
         else:
             s, p, o, all_entities = self.get_rgnn_encoder().encode_spo(
-                s, p, o, "all"
+                s, p, o, entity_subset="all"
             )
         if self.reciprocal_scorer:
             # separate original and inverse direction relation embeddings
