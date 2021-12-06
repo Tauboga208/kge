@@ -138,13 +138,15 @@ def schlichtkrull_std(tensor, gain, shape=None):
     return gain * 3.0 / sqrt(float(fan_in + fan_out))
 
 def schlichtkrull_normal_(tensor, gain=1., shape=None):
-    """Fill the input `Tensor` with values according to the Schlichtkrull method, using a normal distribution."""
+    """Fill the input `Tensor` with values according to the Schlichtkrull
+    method, using a normal distribution."""
     std = schlichtkrull_std(tensor, gain, shape)
     with torch.no_grad():
         return tensor.normal_(0.0, std)
 
 def schlichtkrull_uniform_(tensor, gain=1., shape=None):
-    """Fill the input `Tensor` with values according to the Schlichtkrull method, using a uniform distribution."""
+    """Fill the input `Tensor` with values according to the Schlichtkrull 
+    method, using a uniform distribution."""
     std = schlichtkrull_std(tensor, gain, shape)
     with torch.no_grad():
         return tensor.uniform_(-std, std)
