@@ -10,13 +10,13 @@ compgcn:
     type: lookup_embedder
     initialize: xavier_normal_
     regularize: ''
-    dim: 100
+    dim: 200
     +++: +++
   relation_embedder:
     type: lookup_embedder
     initialize: xavier_normal_
     regularize: ''
-    dim: 100
+    dim: 200
     +++: +++
   encoder:
     type: rgnn_encoder

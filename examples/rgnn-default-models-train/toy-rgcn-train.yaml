@@ -22,6 +22,7 @@ rgcn:
     type: rgnn_encoder
     num_layers: 1
     layer_type: torch_rgcn
+    #layer_type: message_passing
     bias: True 
     weight_init: xavier_uniform_
     weight_decomposition: block # other option: basis

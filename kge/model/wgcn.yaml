@@ -29,7 +29,7 @@ wgcn:
     use_stale_embeddings: True
           # Specific Arguments for the MessagePassingLayer
     message_passing_args:
-      propagation: single_with_self_edge_weight  
+      propagation: single 
       composition: neighbor 
       message_weight: False 
       learned_relation_weight: True # special flag for W-GCN

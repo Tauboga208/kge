@@ -20,7 +20,8 @@ wgcn:
     +++: +++
   encoder:
     type: rgnn_encoder
-    layer_type: weighted_gcn 
+    #layer_type: weighted_gcn 
+    layer_type: message_passing
     activation: tanh
     rel_transformation: self
     num_layers: 1

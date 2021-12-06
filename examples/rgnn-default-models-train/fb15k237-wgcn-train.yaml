@@ -21,12 +21,13 @@ wgcn:
   encoder:
     type: rgnn_encoder
     layer_type: weighted_gcn 
+    #layer_type: message_passing
     activation: tanh
     rel_transformation: self
     num_layers: 2
     emb_entity_dropout: 0.25  
     bias: True 
-  decoder: # here normal ConvE, SACN uses an adapted version of ConvE
+  decoder: # here ConvE, WGCN uses an adapted version of ConvE (TransConvE)
     model: reciprocal_relations_model
     type: reciprocal_relations_model
     base_model.type: conve
