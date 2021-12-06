@@ -110,12 +110,20 @@ class MessagePassing(torch.nn.Module):
         where D_i and D_j are the degrees of nodes i and j of the edge.
         """
         row, col = edge_index 
-        # row_all, _ = self.edge_index
-        edge_weight = torch.ones_like(row).float()
-        deg	= scatter_add(edge_weight, row, dim=0, dim_size=num_ent)	# Summing number of weights of the edges
-        deg_inv	= deg.pow(-0.5)							# D^{-0.5}
-        deg_inv[deg_inv	== float("inf")] = 0
-        norm = deg_inv[row] * edge_weight * deg_inv[col]			# D^{-0.5}
+        if self.propagation_type in ['per_relation_basis', 'per_relation_block']:
+            # compute degree over the whole graph
+            row_all, _ = self.edge_index
+            edge_weight = torch.ones_like(row_all).float()
+            deg	= scatter_add(edge_weight, row_all, dim=0, dim_size=num_ent)	# Summing number of weights of the edges
+            deg_inv	= deg.pow(-0.5)							# D^{-0.5}
+            deg_inv[deg_inv	== float("inf")] = 0
+            norm = deg_inv[row] * edge_weight[row] * deg_inv[col]
+        else:
+            edge_weight = torch.ones_like(row).float()
+            deg	= scatter_add(edge_weight, row, dim=0, dim_size=num_ent)	# Summing number of weights of the edges
+            deg_inv	= deg.pow(-0.5)							# D^{-0.5}
+            deg_inv[deg_inv	== float("inf")] = 0
+            norm = deg_inv[row] * edge_weight * deg_inv[col]			# D^{-0.5}
         return norm
 
     def _calculate_basis_weights(self, mode: str) -> Tensor:
@@ -524,11 +532,13 @@ class MessagePassingLayer(MessagePassing):
             self.rel_indices["out"] = self.edge_type[num_edges:]
 
         elif self.propagation_type in ["per_relation_basis", "per_relation_block"]:
-            for rel in range(self.num_relations):
+            for rel in self.edge_type.unique():
                 # get the indices of the edges with the specific relation type
+                rel = rel.item()
                 rel_index = (self.edge_type == rel).nonzero(as_tuple=True)[0]
                 self.node_indices[str(rel)] = self.edge_index[:, rel_index]
                 self.rel_indices[str(rel)] = self.edge_type[rel_index] 
+            self.modes = [str(rel.item()) for rel in self.edge_type.unique()] + ["loop"]
         else:
             raise NotImplementedError(f"Propagation {self.propagation_type} is not supported.")
 
@@ -558,7 +568,7 @@ class MessagePassingLayer(MessagePassing):
         """ 
         # collect attention weight
         attention_weight_name = "att_" + str(head + 1)
-        attention_weight 	= self.weights["w_{}".format(attention_weight_name)] 
+        attention_weight = self.weights["w_{}".format(attention_weight_name)] 
         
         # calculate scores b_{irj} 
         scores = -self.leakyrelu(messages.mm(attention_weight).squeeze())
